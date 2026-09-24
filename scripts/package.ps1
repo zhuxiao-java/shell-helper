@@ -1,4 +1,4 @@
-# 一键打包桌面端 (Windows)：PyInstaller 构建 Python 后端 -> electron-builder 生成安装包。
+﻿# 一键打包桌面端 (Windows)：PyInstaller 构建 Python 后端 -> electron-builder 生成安装包。
 # 产物目录: apps/desktop/release/
 # 用法: powershell -ExecutionPolicy Bypass -File scripts\package.ps1 [electron-builder 附加参数]
 # 其他平台请使用 scripts/package.sh。

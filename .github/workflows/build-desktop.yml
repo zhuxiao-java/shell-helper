@@ -80,7 +80,7 @@ jobs:
           echo "PYTHON=$(python -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
 
       - name: 打包 (后端测试 -> PyInstaller -> electron-builder)
-        shell: powershell
+        shell: pwsh   # PowerShell 7：必须用它而不是 windows-powershell(5.1)，5.1 会把无 BOM 的 UTF-8 中文注释按 ANSI 解码导致脚本解析失败
         run: ./scripts/package.ps1
 
       - name: 上传 Windows 产物
