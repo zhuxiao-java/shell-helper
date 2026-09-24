@@ -19,7 +19,7 @@ NPM="${NPM:-npm}"
 BACKEND_EXE="$BACKEND/dist/shell-helper-backend"
 
 echo "==> 1/5 检查构建依赖"
-[ -x "$PY" ] || { echo "找不到 Python 解释器: $PY (可通过环境变量 PYTHON 指定)"; exit 1; }
+command -v "$PY" >/dev/null 2>&1 || [ -x "$PY" ] || { echo "找不到 Python 解释器: $PY (可通过环境变量 PYTHON 指定)"; exit 1; }
 if ! "$PY" -m PyInstaller --version >/dev/null 2>&1; then
   echo "    安装构建期依赖 PyInstaller"
   "$PY" -m pip install -r "$BACKEND/requirements-build.txt"

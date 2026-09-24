@@ -16,7 +16,7 @@ $Py = if ($env:PYTHON) { $env:PYTHON } else { Join-Path $Root ".venv\Scripts\pyt
 $BackendExe = Join-Path $Backend "dist\shell-helper-backend.exe"
 
 Write-Host "==> 1/5 检查构建依赖"
-if (-not (Test-Path $Py)) { Write-Error "找不到 Python 解释器: $Py (可通过环境变量 PYTHON 指定)"; exit 1 }
+if (-not ((Test-Path $Py) -or (Get-Command $Py -ErrorAction SilentlyContinue))) { Write-Error "找不到 Python 解释器: $Py (可通过环境变量 PYTHON 指定)"; exit 1 }
 & $Py -m PyInstaller --version *> $null
 if ($LASTEXITCODE -ne 0) {
   Write-Host "    安装构建期依赖 PyInstaller"
