@@ -1,0 +1,26 @@
+appId: com.shellhelper.app
+productName: Shell Helper
+directories:
+  output: release
+  buildResources: build
+files:
+  - out/**
+  - resources/**
+extraResources:
+  # PyInstaller 打好的 Python 后端放入 resources/backend/<platform>
+  - from: ../../backend/dist
+    to: backend
+    filter: ["**/*"]
+asar: true
+mac:
+  category: public.app-category.developer-tools
+  target: ["dmg", "zip"]
+  notarize: false
+win:
+  target: ["nsis", "portable"]
+linux:
+  target: ["AppImage", "deb"]
+  category: Development
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true

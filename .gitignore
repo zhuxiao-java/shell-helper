@@ -1,0 +1,34 @@
+# ---- macOS ----
+.DS_Store
+
+# ---- IDE ----
+.idea/
+.vscode/
+
+# ---- Python 后端 ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+# PyInstaller 产物
+backend/build/
+backend/dist/
+
+# ---- Node / Electron 桌面端 ----
+node_modules/
+npm-debug.log*
+yarn-error.log*
+# electron-vite 构建产物
+apps/desktop/out/
+# electron-builder 打包产物
+apps/desktop/release/
+# TypeScript 增量编译缓存
+*.tsbuildinfo
+
+# ---- 运行期数据（保险起见，防止误提交用户数据）----
+*.db
+*.db-journal
+*.sqlite3
+backend/*.log

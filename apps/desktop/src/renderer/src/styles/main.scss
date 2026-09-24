@@ -1,0 +1,337 @@
+// ============================================================
+// Shell Helper 设计系统 — 浅色外壳 + 深色终端
+// 侧栏/内容/表单/浮层为浅色,终端保持深色,形成工作区边界
+// ============================================================
+
+:root {
+  // 尺寸
+  --sh-header-h: 52px;
+  --sh-sidebar-w: 260px;
+  --sh-statusbar-h: 28px;
+  --sh-tabbar-h: 44px;
+
+  // 圆角 / 控件 / 间距令牌
+  --sh-radius: 10px;
+  --sh-radius-sm: 7px;
+  --sh-radius-lg: 16px;
+  --sh-control-h: 32px;
+  --sh-gap: 8px;
+  --sh-gap-sm: 4px;
+  --sh-gap-md: 8px;
+  --sh-gap-lg: 12px;
+  --sh-gap-xl: 16px;
+  --sh-gap-2xl: 24px;
+
+  // 浅色表面
+  --sh-bg: #f4f3ef; // 应用底色
+  --sh-bg-sidebar: #eeede8; // 侧栏
+  --sh-bg-elevated: #faf9f6; // 内容 / 表单 / 浮层
+  --sh-bg-panel: #ffffff;
+  --sh-font-mono: 'SFMono-Regular', Menlo, Monaco, Consolas, monospace;
+  --sh-ink: #293c36;
+  --sh-bg-hover: #e6e7e1; // 中性悬停
+  --sh-bg-active: #dddfd7; // 中性按下/激活
+  --sh-bg-selected: #e2ece5; // 强调选中底
+
+  // 描边
+  --sh-border: #e3e3db;
+  --sh-border-strong: #d1d5cb;
+
+  // 文本
+  --sh-text: #2d3832;
+  --sh-text-secondary: #687168;
+  --sh-text-muted: #7b847a;
+
+  // 品牌(单一蓝强调)
+  --sh-accent: #47755d;
+  --sh-accent-soft: rgba(71, 117, 93, 0.09);
+  --sh-accent-border: rgba(71, 117, 93, 0.3);
+
+  // 语义色
+  --sh-success: #568566;
+  --sh-danger: #c35151;
+
+  // 协议色(低饱和,浅色下深色文字)
+  --sh-ssh: #47755d;
+  --sh-sftp: #577e8c;
+  --sh-ftp: #a1834f;
+  --sh-telnet: #956780;
+  --sh-local: #797194;
+
+  // 阴影(仅浮层/弹窗)
+  --sh-shadow-pop: 0 8px 28px rgba(38, 48, 40, 0.1);
+  --sh-shadow-dialog: 0 24px 80px rgba(28, 40, 32, 0.18);
+
+  // ---- 终端专属深色(不随浅色外壳改变) ----
+  --sh-bg-terminal: #16181d;
+  --sh-terminal-text: #e6e9ef;
+  --sh-terminal-muted: #9aa4b2;
+  --sh-terminal-danger: #f0616d;
+}
+
+// ---- 浅色下微调 Element Plus:统一主色与控件观感 ----
+:root {
+  --el-color-primary: #47755d;
+  --el-color-primary-light-3: #7e9e88;
+  --el-color-primary-light-5: #a3baab;
+  --el-color-primary-light-7: #c8d7cc;
+  --el-color-primary-light-8: #dbe5de;
+  --el-color-primary-light-9: #e2ece5;
+  --el-color-primary-dark-2: #355944;
+  --el-color-success: var(--sh-success);
+  --el-color-danger: var(--sh-danger);
+  --el-border-radius-base: 7px;
+  --el-text-color-primary: var(--sh-text);
+  --el-text-color-regular: var(--sh-text-secondary);
+  --el-text-color-secondary: var(--sh-text-muted);
+  --el-border-color: var(--sh-border-strong);
+  --el-border-color-light: var(--sh-border);
+  --el-fill-color-light: var(--sh-bg);
+  --el-bg-color: var(--sh-bg-panel);
+  --el-mask-color: rgba(250, 249, 246, 0.85);
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+// 复合输入控件由外框呈现焦点，避免内部输入框叠加方形轮廓。
+button:focus-visible,
+[tabindex]:not(.el-input__inner, .el-select__input, .el-select__wrapper, .el-textarea__inner):focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--sh-accent);
+  outline-offset: 3px;
+}
+
+kbd {
+  font: 11px var(--sh-font-mono);
+  padding: 3px 6px;
+  border: 1px solid var(--sh-border-strong);
+  border-radius: 5px;
+  color: var(--sh-text-secondary);
+  background: var(--sh-bg-elevated);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
+    'PingFang SC', 'Microsoft YaHei', sans-serif;
+  overflow: hidden;
+  color: var(--sh-text);
+  background: var(--sh-bg);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+input,
+textarea,
+[contenteditable]:not([contenteditable='false']) {
+  user-select: text;
+}
+
+// ---- 自定义滚动条(浅色) ----
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(20, 28, 44, 0.18);
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(20, 28, 44, 0.3);
+  background-clip: content-box;
+}
+
+// ---- 布局骨架 ----
+.sh-app {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--sh-bg-sidebar);
+}
+
+.sh-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.sh-sidebar {
+  width: var(--sh-sidebar-w);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--sh-bg-sidebar);
+  position: relative;
+}
+.sh-sidebar.hidden {
+  display: none;
+}
+
+// 侧栏拖拽调宽手柄
+.sidebar-resizer {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 5;
+}
+.sidebar-resizer:hover,
+.sidebar-resizer.active {
+  background: var(--sh-accent-border);
+}
+
+.sh-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--sh-bg-elevated);
+  margin: 0 10px 0 0;
+  border: 1px solid var(--sh-border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.sh-statusbar {
+  height: var(--sh-statusbar-h);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 0 18px;
+  font-size: 11px;
+  color: var(--sh-text-secondary);
+  background: var(--sh-bg-sidebar);
+}
+
+.status-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--sh-text-muted);
+}
+.status-dot.ok {
+  background: var(--sh-success);
+}
+.status-dot.err {
+  background: var(--sh-danger);
+}
+
+// ---- 终端容器(深色,独立于浅色外壳) ----
+.terminal-host {
+  flex: 1;
+  min-height: 0;
+  padding: 12px;
+  background: var(--sh-bg-terminal);
+}
+
+// ---- 协议色辅助 ----
+.proto-ssh { color: var(--sh-ssh); }
+.proto-sftp { color: var(--sh-sftp); }
+.proto-ftp { color: var(--sh-ftp); }
+.proto-telnet { color: var(--sh-telnet); }
+.proto-local { color: var(--sh-local); }
+
+// ---- Element Plus 细节打磨(浅色) ----
+.el-button {
+  font-weight: 500;
+  border-radius: var(--sh-radius-sm);
+}
+// 通过主题变量定制外观，保留组件的悬停、焦点、禁用和校验状态。
+.el-input,
+.el-textarea {
+  --el-input-bg-color: var(--sh-bg-panel);
+  --el-input-text-color: var(--sh-text);
+  --el-input-border-color: var(--sh-border);
+  --el-input-hover-border-color: var(--sh-border-strong);
+  --el-input-focus-border-color: var(--sh-accent);
+  --el-input-border-radius: var(--sh-radius-sm);
+}
+.el-select {
+  --el-fill-color-blank: var(--sh-bg-panel);
+  --el-input-text-color: var(--sh-text);
+  --el-border-color: var(--sh-border);
+  --el-border-color-hover: var(--sh-border-strong);
+  --el-border-radius-base: var(--sh-radius-sm);
+}
+.el-dialog {
+  padding: 0;
+  margin: max(24px, 6vh) auto;
+  border: 1px solid var(--sh-border);
+  border-radius: var(--sh-radius-lg);
+  background: #fff;
+  box-shadow: var(--sh-shadow-dialog);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  // 最大不超过窗口宽-32 / 高-48
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 48px);
+}
+.el-dialog__header {
+  margin-right: 0;
+  padding: 24px 28px 16px;
+  flex-shrink: 0;
+}
+.el-dialog__body {
+  padding: 4px 28px 24px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+.el-dialog__footer {
+  padding: 16px 28px;
+  background: var(--sh-bg-elevated);
+  border-top: 1px solid var(--sh-border);
+  flex-shrink: 0;
+}
+.el-popper.is-light {
+  border: 1px solid var(--sh-border-strong) !important;
+  box-shadow: var(--sh-shadow-pop) !important;
+}
+.el-table {
+  --el-table-border-color: var(--sh-border);
+  --el-table-bg-color: var(--sh-bg-elevated);
+  --el-table-tr-bg-color: var(--sh-bg-elevated);
+  --el-table-header-bg-color: var(--sh-bg-elevated);
+  --el-table-row-hover-bg-color: var(--sh-accent-soft);
+  --el-table-current-row-bg-color: var(--sh-bg-selected);
+  --el-table-header-text-color: var(--sh-text-secondary);
+  --el-table-text-color: var(--sh-text);
+  background: var(--sh-bg-elevated);
+}
+.el-table th.el-table__cell {
+  font-weight: 600;
+}
