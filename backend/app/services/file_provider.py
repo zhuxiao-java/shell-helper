@@ -86,7 +86,7 @@ class FileProvider:
         self.closed = False
 
     def __init_subclass__(cls):
-        for name in ("list", "mkdir", "rename", "remove", "is_dir", "read_content", "write_content", "close"):
+        for name in ("list", "mkdir", "create_file", "file_exists", "rename", "remove", "is_dir", "read_content", "write_content", "close"):
             if name in cls.__dict__:
                 setattr(cls, name, serialized(cls.__dict__[name]))
 
@@ -115,7 +115,13 @@ class FileProvider:
     def list(self, path: str) -> list[FileStat]:
         raise NotImplementedError
 
+    def file_exists(self, path: str) -> bool:
+        raise NotImplementedError
+
     def mkdir(self, path: str) -> None:
+        raise NotImplementedError
+
+    def create_file(self, path: str) -> None:
         raise NotImplementedError
 
     def rename(self, old: str, new: str) -> None:
@@ -213,6 +219,19 @@ class SftpProvider(FileProvider):
 
     def mkdir(self, path: str) -> None:
         self._sftp.mkdir(path)
+
+    def file_exists(self, path: str) -> bool:
+        try:
+            self._sftp.lstat(path)
+            return True
+        except IOError:
+            return False
+
+    def create_file(self, path: str) -> None:
+        if self.file_exists(path):
+            raise ContentError(409, "同名文件已存在")
+        with self._sftp.open(path, "x"):
+            pass
 
     def rename(self, old: str, new: str) -> None:
         self._sftp.rename(old, new)

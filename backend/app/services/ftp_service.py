@@ -172,6 +172,18 @@ class FtpProvider(FileProvider):
     def mkdir(self, path: str) -> None:
         self._ftp.mkd(path)
 
+    def file_exists(self, path: str) -> bool:
+        parent, name = posixpath.split(path)
+        return any(s.name == name for s in self.list(parent or "."))
+
+    def create_file(self, path: str) -> None:
+        if self.file_exists(path):
+            raise ContentError(409, "同名文件已存在")
+        try:
+            self._ftp.storbinary(f"STOR {path}", io.BytesIO(b""))
+        except error_perm as e:
+            raise ContentError(403, "服务器拒绝创建文件") from e
+
     def rename(self, old: str, new: str) -> None:
         self._ftp.rename(old, new)
 
