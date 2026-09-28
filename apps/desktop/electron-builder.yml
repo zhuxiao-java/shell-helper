@@ -6,11 +6,19 @@ directories:
 files:
   - out/**
   - resources/**
+  # 渲染层依赖已被 Vite 打进 out/，主进程只用 node:*/electron 内置模块，
+  # 因此不需要把 node_modules 塞进 asar（此前 element-plus 等被重复打包，白白 +70MB）
+  - '!node_modules/**'
+  - package.json
 extraResources:
   # PyInstaller 打好的 Python 后端放入 resources/backend/<platform>
   - from: ../../backend/dist
     to: backend
-    filter: ["**/*"]
+    filter: ["shell-helper-backend", "shell-helper-backend.exe"]
+# 只保留中英文语言包，删掉 Electron 自带的 50+ 种 lproj/locale
+electronLanguages:
+  - zh-CN
+  - en-US
 asar: true
 mac:
   category: public.app-category.developer-tools
