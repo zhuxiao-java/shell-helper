@@ -103,6 +103,15 @@ def mkdir(session_id: str, path: str):
     except Exception as e:  # noqa: BLE001
         raise HTTPException(400, f"创建目录失败: {e}") from e
 
+@router.post("/create", status_code=204)
+def create_file(session_id: str, path: str):
+    provider = _provider_or_404(session_id)
+    try:
+        _content_operation(lambda: provider.create_file(path))
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, f"创建文件失败: {e}") from e
 
 @router.post("/rename", status_code=204)
 def rename(session_id: str, old_path: str, new_path: str):
