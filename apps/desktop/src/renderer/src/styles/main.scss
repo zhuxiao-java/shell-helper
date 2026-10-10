@@ -50,6 +50,40 @@
   // 语义色
   --sh-success: #568566;
   --sh-danger: #c35151;
+  --sh-warning: #a1834f;
+  --sh-warning-bg: #faf2e4;
+  --sh-warning-text: #856837;
+  --sh-on-ink: #f5f7ef;
+  --sh-on-ink-muted: #b9cabd;
+  --sh-ink-hover: #354e43;
+  --sh-logo-fg: #e6efdf;
+  --sh-mark-bg: #e7eddf;
+  --sh-mark-border: #cbd8c8;
+  --sh-kbd-on-ink: #3a5044;
+  --sh-kbd-on-ink-border: #526756;
+  --sh-kbd-on-ink-text: #d3ded2;
+  --sh-tree-bg: #f6f6f2;
+  --sh-tree-border: #ecece6;
+  --sh-tree-hover: #eaece5;
+  --sh-tree-current: #e3ebe1;
+  --sh-tree-current-text: #355944;
+  --sh-tree-arrow: #929c90;
+  --sh-path-divider: #a8aea7;
+  --sh-row-hover: #f5f7f3;
+  --sh-row-selected: #eaf1e7;
+  --sh-row-selected-border: #d9e6d4;
+  --sh-column-line: #eef0eb;
+  --sh-count-bg: #f0f2ed;
+  --sh-search-bg: #f7f8f5;
+  --sh-file-glyph-border: #dfe4e2;
+  --sh-file-glyph-color: #8b9997;
+  --sh-file-glyph-bg: #f7f9f8;
+  --sh-blank-icon: #b4bcae;
+  --sh-storage-card: #fcfcfa;
+  --sh-storage-icon-bg: #eaf0e6;
+  --sh-storage-path-border: #eceee7;
+  --sh-storage-path-bg: #f3f5f0;
+  --sh-storage-path-text: #56634f;
 
   // 协议色(低饱和,浅色下深色文字)
   --sh-ssh: #47755d;
@@ -291,7 +325,7 @@ textarea,
   margin: max(24px, 6vh) auto;
   border: 1px solid var(--sh-border);
   border-radius: var(--sh-radius-lg);
-  background: #fff;
+  background: var(--sh-bg-panel);
   box-shadow: var(--sh-shadow-dialog);
   overflow: hidden;
   display: flex;
@@ -334,4 +368,73 @@ textarea,
 }
 .el-table th.el-table__cell {
   font-weight: 600;
+}
+
+html.theme-dark {
+  color-scheme: dark;
+  --sh-bg: #1c211e;
+  --sh-bg-sidebar: #171c19;
+  --sh-bg-elevated: #222824;
+  --sh-bg-panel: #2a312c;
+  --sh-bg-hover: #313a34;
+  --sh-bg-active: #3a453d;
+  --sh-bg-selected: #24382e;
+  --sh-border: #3a433d;
+  --sh-border-strong: #4d5a51;
+  --sh-text: #e7eee8;
+  --sh-text-secondary: #b7c3ba;
+  --sh-text-muted: #8b998f;
+  --sh-ink: #d7e7dc;
+  --sh-on-ink: #1c2822;
+  --sh-on-ink-muted: #3d5246;
+  --sh-ink-hover: #edf5ef;
+  --sh-logo-fg: #1c2822;
+  --sh-accent: #8fbfa3;
+  --sh-accent-soft: rgba(143, 191, 163, 0.16);
+  --sh-accent-border: rgba(143, 191, 163, 0.4);
+  --sh-success: #7dbe96;
+  --sh-danger: #e07a7a;
+  --sh-warning: #d2b27a;
+  --sh-warning-bg: #3a3224;
+  --sh-warning-text: #e6d3a8;
+  --sh-mark-bg: #24302a;
+  --sh-mark-border: #3d4d44;
+  --sh-kbd-on-ink: #24302a;
+  --sh-kbd-on-ink-border: #415248;
+  --sh-kbd-on-ink-text: #d7e7dc;
+  --sh-tree-bg: #1e2420;
+  --sh-tree-border: #343d37;
+  --sh-tree-hover: #2c3530;
+  --sh-tree-current: #2a4034;
+  --sh-tree-current-text: #d7e7dc;
+  --sh-tree-arrow: #8b998f;
+  --sh-path-divider: #6d7a72;
+  --sh-row-hover: #2c3530;
+  --sh-row-selected: #24382e;
+  --sh-row-selected-border: #3d5648;
+  --sh-column-line: #343d37;
+  --sh-count-bg: #313a34;
+  --sh-search-bg: #313a34;
+  --sh-file-glyph-border: #3d4842;
+  --sh-file-glyph-color: #9aaba0;
+  --sh-file-glyph-bg: #24302a;
+  --sh-blank-icon: #6d7a72;
+  --sh-storage-card: #24302a;
+  --sh-storage-icon-bg: #2c3b33;
+  --sh-storage-path-border: #3a433d;
+  --sh-storage-path-bg: #1c211e;
+  --sh-storage-path-text: #c5d2c8;
+  --el-color-primary: #8fbfa3;
+  --el-color-primary-light-3: #6ea484;
+  --el-color-primary-light-5: #4e7360;
+  --el-color-primary-light-7: #355244;
+  --el-color-primary-light-8: #2c4036;
+  --el-color-primary-light-9: #24382e;
+  --el-color-primary-dark-2: #c5e0d0;
+  --el-bg-color: var(--sh-bg-panel);
+  --el-fill-color-light: var(--sh-bg);
+  --el-mask-color: rgba(18, 22, 19, 0.72);
+  --el-text-color-primary: var(--sh-text);
+  --el-text-color-regular: var(--sh-text-secondary);
+  --el-text-color-secondary: var(--sh-text-muted);
 }

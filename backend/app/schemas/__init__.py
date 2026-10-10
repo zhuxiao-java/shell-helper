@@ -54,6 +54,10 @@ class HostOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class HostTestInput(HostInput):
+    id: str | None = None
+
+
 class SessionInput(BaseModel):
     host_id: str
     type: Literal["terminal", "sftp", "ftp"] = "terminal"

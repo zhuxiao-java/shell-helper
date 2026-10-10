@@ -10,7 +10,8 @@ from ..core.db import get_db
 from ..core.security import require_auth
 from ..models import Host
 from ..repositories import host_repo
-from ..schemas import HostInput, HostOut
+from ..schemas import HostInput, HostOut, HostTestInput
+from ..services import ftp_service, ssh_service, telnet_service
 
 router = APIRouter(prefix="/api/hosts", tags=["hosts"], dependencies=[Depends(require_auth)])
 
@@ -42,6 +43,55 @@ def list_hosts(db: Session = Depends(get_db)):
 def create_host(data: HostInput, db: Session = Depends(get_db)):
     host = host_repo.create_host(db, data)
     return _to_out(host)
+
+
+@router.post("/test")
+def test_connection(data: HostTestInput, db: Session = Depends(get_db)):
+    if data.protocol == "local":
+        return {"ok": True, "message": "本地终端使用本机 Shell，无需远程探测"}
+    if not data.host.strip():
+        raise HTTPException(400, "请输入主机地址")
+    for jump_id in data.jump_host_ids:
+        jump = host_repo.get_host(db, jump_id)
+        if data.id and jump_id == data.id:
+            raise HTTPException(400, "不能把自己设为跳板")
+        if not jump or jump.protocol not in {"ssh", "sftp"}:
+            raise HTTPException(400, "跳板机必须是已保存的 SSH 或 SFTP 连接")
+    host = Host(
+        name=data.name or "连接探测",
+        group=data.group,
+        protocol=data.protocol,
+        host=data.host,
+        port=data.port,
+        username=data.username,
+        auth_type=data.auth_type,
+        key_path=data.key_path,
+        jump_host_ids=json.dumps(data.jump_host_ids),
+        tags=data.tags,
+        remote_cwd=data.remote_cwd,
+    )
+    password = data.password or None
+    if not password and data.id:
+        stored = host_repo.get_host(db, data.id)
+        if stored:
+            password = host_repo.resolve_password(db, stored)
+    try:
+        if data.protocol in {"ssh", "sftp"}:
+            client = ssh_service.connect(host, password)
+            ssh_service.close_client(client)
+        elif data.protocol == "ftp":
+            ftp = ftp_service.connect(host, password)
+            ftp.quit()
+        elif data.protocol == "telnet":
+            channel = telnet_service.connect(host, password)
+            channel.close()
+        else:
+            raise HTTPException(400, "不支持的协议")
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"连接失败: {exc}") from exc
+    return {"ok": True, "message": "连接成功"}
 
 
 @router.get("/{host_id}", response_model=HostOut)

@@ -8,7 +8,7 @@ import '@xterm/xterm/css/xterm.css'
 import './styles/main.scss'
 import App from './App.vue'
 
-// 应用以浅色外壳运行(终端区域在组件内保持深色)
+// 外壳默认浅色，可在设置里改为深色或跟随系统；终端区域保持深色
 const app = createApp(App)
 app.use(createPinia())
 app.use(ElementPlus, { locale: zhCn })

@@ -25,3 +25,19 @@ export async function remove(sessionId: string, path: string): Promise<void> {
   const http = await getHttp()
   await http.post('/api/files/delete', null, { params: { session_id: sessionId, path } })
 }
+
+export async function download(sessionId: string, path: string): Promise<Blob> {
+  const http = await getHttp()
+  const { data } = await http.get<Blob>('/api/files/download', {
+    params: { session_id: sessionId, path },
+    responseType: 'blob'
+  })
+  return data
+}
+
+export async function upload(sessionId: string, directory: string, file: File): Promise<void> {
+  const http = await getHttp()
+  const body = new FormData()
+  body.append('file', file)
+  await http.post('/api/files/upload', body, { params: { session_id: sessionId, directory } })
+}

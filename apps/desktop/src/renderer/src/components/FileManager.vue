@@ -4,13 +4,15 @@ import { ElMessage, ElMessageBox, type TreeInstance } from 'element-plus'
 import * as fileApi from '@renderer/api/files'
 import type { FileEntry } from '@renderer/api/types'
 import type { Tab } from '@renderer/stores/session'
+import { useSessionStore } from '@renderer/stores/session'
 import { useHostStore } from '@renderer/stores/host'
 import { useExternalStore } from '@renderer/stores/external'
 import { useSettingsStore } from '@renderer/stores/settings'
-import { fileBridges } from '@renderer/utils/workspace'
+import { fileBridges, sessionMeta } from '@renderer/utils/workspace'
 import { EDIT_STATUS, MAX_FILE_BYTES } from '../../../shared/external'
 
 const props = defineProps<{ tab: Tab; visible: boolean }>()
+const sessionStore = useSessionStore()
 const external = useExternalStore()
 const settings = useSettingsStore()
 const hosts = useHostStore()
@@ -25,7 +27,7 @@ fileBridges.set(props.tab.id, {
     else ElMessage.info('请先选择普通文本文件')
   }
 })
-onBeforeUnmount(() => { fileBridges.delete(props.tab.id); requestId++ })
+onBeforeUnmount(() => { fileBridges.delete(props.tab.id); delete sessionMeta.path[props.tab.id]; requestId++ })
 
 const cwd = ref('/')
 const entries = ref<FileEntry[]>([])
@@ -35,6 +37,11 @@ const loadError = ref('')
 const loaded = ref(false)
 const attemptedPath = ref('/')
 const query = ref('')
+const sortKey = ref<'name' | 'mtime' | 'size'>('name')
+const sortDir = ref<1 | -1>(1)
+const uploadInput = ref<HTMLInputElement>()
+const transferring = ref(false)
+const MAX_TRANSFER = 32 * 1024 * 1024
 const showTree = ref(true)
 const tree = ref<TreeInstance>()
 const treeVersion = ref(0)
@@ -48,7 +55,18 @@ const breadcrumbs = computed(() => cwd.value.split('/').filter(Boolean).map((nam
 const folderName = computed(() => breadcrumbs.value.at(-1)?.name || '根目录')
 const expandedPaths = computed(() => ['/', ...breadcrumbs.value.map(segment => segment.path)])
 const host = computed(() => hosts.byId(props.tab.hostId))
-const visibleEntries = computed(() => entries.value.filter(e => e.name.toLocaleLowerCase().includes(query.value.toLocaleLowerCase())).slice().sort((a, b) => Number(b.is_dir) - Number(a.is_dir) || a.name.localeCompare(b.name, undefined, { numeric: true })))
+const visibleEntries = computed(() => entries.value.filter(e => e.name.toLocaleLowerCase().includes(query.value.toLocaleLowerCase())).slice().sort((a, b) => {
+  const directory = Number(b.is_dir) - Number(a.is_dir)
+  if (directory) return directory
+  if (sortKey.value === 'size') return (a.size - b.size) * sortDir.value
+  if (sortKey.value === 'mtime') return (a.mtime - b.mtime) * sortDir.value
+  return a.name.localeCompare(b.name, undefined, { numeric: true }) * sortDir.value
+}))
+const linkState = computed(() => props.tab.connecting ? 'pending' : (!props.tab.session || props.tab.session.status === 'closed' || props.tab.error ? 'off' : 'ok'))
+function toggleSort(key: 'name' | 'mtime' | 'size'): void {
+  if (sortKey.value === key) sortDir.value = sortDir.value === 1 ? -1 : 1
+  else { sortKey.value = key; sortDir.value = 1 }
+}
 const folders = computed(() => entries.value.filter(e => e.is_dir).length)
 watch(visibleEntries, list => { if (selected.value && !list.some(e => e.path === selected.value?.path)) selected.value = null })
 // 首次加载标记:避免空目录时 watch 重复触发 load
@@ -127,7 +145,10 @@ async function load(path = cwd.value): Promise<void> {
   } catch (err) {
     if (current !== requestId) return
     loadError.value = (err as Error).message || '未知错误'
-    if ((err as { response?: { status: number } }).response?.status === 410) void window.shellHelper.detachEdits(sid)
+    if ((err as { response?: { status: number } }).response?.status === 410) {
+      void window.shellHelper.detachEdits(sid)
+      if (props.tab.session) props.tab.session.status = 'closed'
+    }
   } finally {
     if (current === requestId) loading.value = false
   }
@@ -238,6 +259,7 @@ async function onRename(entry: FileEntry): Promise<void> {
 async function onRowCommand(cmd: string, row: FileEntry): Promise<void> {
   try {
     if (cmd === 'open') await open(row)
+    else if (cmd === 'download') await onDownload(row)
     else if (cmd === 'rename') await onRename(row)
     else if (cmd === 'delete') await onDelete(row)
   } catch (error) {
@@ -245,17 +267,63 @@ async function onRowCommand(cmd: string, row: FileEntry): Promise<void> {
   }
 }
 
+async function onUpload(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  const sid = props.tab.session?.session_id
+  if (!file || !sid) return
+  if (file.size > MAX_TRANSFER) { ElMessage.warning('文件超过 32 MiB'); return }
+  transferring.value = true
+  try {
+    await fileApi.upload(sid, cwd.value, file)
+    ElMessage.success('已上传')
+    await refresh()
+  } catch (error) {
+    ElMessage.error((error as Error).message || '上传失败')
+  } finally { transferring.value = false }
+}
+
+async function onDownload(entry: FileEntry): Promise<void> {
+  const sid = props.tab.session?.session_id
+  if (!sid || entry.is_dir) return
+  if (entry.size > MAX_TRANSFER) { ElMessage.warning('文件超过 32 MiB'); return }
+  transferring.value = true
+  try {
+    const blob = await fileApi.download(sid, entry.path)
+    if (blob.type.includes('json')) {
+      const detail = JSON.parse(await blob.text()) as { detail?: string }
+      throw new Error(detail.detail || '下载失败')
+    }
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = entry.name
+    link.click()
+    URL.revokeObjectURL(url)
+  } catch (error) {
+    ElMessage.error((error as Error).message || '下载失败')
+  } finally { transferring.value = false }
+}
+
 async function createFolder(): Promise<void> {
   try { await onNewDir() }
   catch (error) { if (error !== 'cancel' && error !== 'close') ElMessage.error((error as Error).message || '创建失败') }
 }
 
+watch(cwd, (path) => { sessionMeta.path[props.tab.id] = path })
 watch(
-  () => [props.visible, props.tab.session] as const,
-  ([vis]) => {
-    if (vis && props.tab.session && !props.tab.connecting && !initialized) {
+  () => [props.visible, props.tab.session?.session_id, props.tab.connecting] as const,
+  ([vis, sessionId, connecting], previous) => {
+    if (previous && sessionId !== previous[1]) {
+      initialized = false
+      loaded.value = false
+      entries.value = []
+      loadError.value = ''
+    }
+    if (vis && sessionId && !connecting && !initialized) {
       initialized = true
-      load(initialCwd())
+      void load(initialCwd())
     }
   },
   { immediate: true }
@@ -292,18 +360,20 @@ watch(
         <div class="tree-heading">目录 <span>远程</span></div>
         <el-tree v-if="loaded" :key="treeVersion" ref="tree" class="directory-tree" node-key="path" lazy :load="loadTree" :props="{ label: 'name' }" :default-expanded-keys="expandedPaths" :current-node-key="cwd" :expand-on-click-node="false" highlight-current :indent="14" @node-click="(node: FolderNode) => load(node.path)">
           <template #default="{ node, data }">
-            <span class="tree-label" :title="data.path"><span class="folder-glyph small" :class="{ expanded: node.expanded }" aria-hidden="true"></span><span>{{ data.name }}</span></span>
+            <span class="tree-label" :title="data.path"><el-icon class="tree-folder"><Folder /></el-icon><span>{{ data.name }}</span></span>
           </template>
         </el-tree>
         <p v-else class="tree-placeholder">连接后显示目录</p>
-        <div class="tree-host"><el-icon><Connection /></el-icon><span :title="host?.host">{{ host?.host || '远程主机' }}</span><span class="connection-dot"></span></div>
+        <div class="tree-host"><el-icon><Connection /></el-icon><span :title="host?.host">{{ host?.host || '远程主机' }}</span><span class="connection-dot" :class="linkState" :title="linkState === 'ok' ? '已连接' : linkState === 'pending' ? '连接中' : '已断开'"></span></div>
       </aside>
 
       <section class="fm-content" aria-label="远程文件">
         <header class="folder-heading">
-          <div class="folder-title"><span class="folder-glyph hero" aria-hidden="true"></span><div><h2 :title="folderName">{{ folderName }}</h2><p>{{ folders }} 个文件夹<span>·</span>{{ entries.length - folders }} 个文件</p></div></div>
+          <div class="folder-title"><el-icon class="folder-hero"><Folder /></el-icon><div><h2 :title="folderName">{{ folderName }}</h2><p>{{ folders }} 个文件夹<span>·</span>{{ entries.length - folders }} 个文件</p></div></div>
           <div class="fm-actions">
+            <input ref="uploadInput" class="upload-input" type="file" aria-label="选择要上传的文件" @change="onUpload" />
             <el-button text :loading="opening" :disabled="!selected || selected.is_dir || loading || !!loadError" :title="settings.hint('openFile')" :icon="'TopRight'" @click="selected && open(selected)">外部打开</el-button>
+            <el-button :icon="'Upload'" :loading="transferring" :disabled="!loaded || loading || !!loadError || linkState !== 'ok'" @click="uploadInput?.click()">上传</el-button>
             <el-button :icon="'FolderAdd'" :disabled="!loaded || loading || !!loadError" @click="createFolder">新建文件夹</el-button>
           </div>
         </header>
@@ -315,16 +385,21 @@ watch(
         <div v-if="loadError" class="fm-error" role="alert">
           <el-icon :size="32"><WarningFilled /></el-icon><p class="fm-error-title">无法打开此目录</p>
           <p class="fm-error-msg">{{ attemptedPath }} — {{ loadError }}</p>
-          <el-button :icon="'Refresh'" @click="load(attemptedPath)">重试</el-button>
+          <div class="error-actions"><el-button :icon="'Refresh'" @click="load(attemptedPath)">重试</el-button><el-button v-if="linkState !== 'ok'" @click="sessionStore.reconnect(tab.id)">重新连接</el-button></div>
         </div>
         <!-- 文件表 -->
         <div v-else v-loading="loading" class="fm-table-wrap" :aria-busy="loading">
           <div class="file-list" role="grid" aria-label="目录内容" :aria-rowcount="visibleEntries.length + 1" :aria-colcount="4">
-            <div class="file-columns" role="row"><span role="columnheader">名称 <el-icon><Top /></el-icon></span><span role="columnheader">修改时间</span><span role="columnheader" class="f-size">大小</span><span role="columnheader" aria-label="操作"></span></div>
+            <div class="file-columns" role="row">
+              <button type="button" role="columnheader" @click="toggleSort('name')">名称 <el-icon v-if="sortKey === 'name'"><component :is="sortDir === 1 ? 'Top' : 'Bottom'" /></el-icon></button>
+              <button type="button" role="columnheader" @click="toggleSort('mtime')">修改时间 <el-icon v-if="sortKey === 'mtime'"><component :is="sortDir === 1 ? 'Top' : 'Bottom'" /></el-icon></button>
+              <button type="button" role="columnheader" class="f-size" @click="toggleSort('size')">大小 <el-icon v-if="sortKey === 'size'"><component :is="sortDir === 1 ? 'Top' : 'Bottom'" /></el-icon></button>
+              <span role="columnheader" aria-label="操作"></span>
+            </div>
             <div class="file-rows" role="rowgroup">
               <div v-for="(row, index) in visibleEntries" :key="row.path" class="fm-row" :class="{ selected: selected?.path === row.path, 'is-hidden': row.name.startsWith('.') }" role="row" :aria-selected="selected?.path === row.path" :tabindex="selected ? (selected.path === row.path ? 0 : -1) : (index === 0 ? 0 : -1)" :title="`${row.name}\n${row.mode}\n${fmtTime(row.mtime)}`" @click="selected = row" @focus="selected = row" @dblclick="open(row)" @keydown="onFileKey($event, row)">
                 <div class="f-name" role="gridcell">
-                  <span v-if="row.is_dir" class="folder-glyph" aria-hidden="true"></span>
+                  <el-icon v-if="row.is_dir" class="folder-icon"><Folder /></el-icon>
                   <span v-else class="file-glyph" :class="fileKind(row).tone" aria-hidden="true"><el-icon><component :is="fileKind(row).icon" /></el-icon></span>
                   <span class="file-name-text">{{ row.name }}</span><el-icon v-if="row.is_dir" class="folder-arrow"><ArrowRight /></el-icon>
                 </div>
@@ -335,6 +410,7 @@ watch(
                     <button class="row-more fm-icon-button" :aria-label="`${row.name} 的更多操作`" :disabled="loading" @click.stop="selected = row"><el-icon><MoreFilled /></el-icon></button>
                     <template #dropdown><el-dropdown-menu>
                       <el-dropdown-item command="open" :icon="row.is_dir ? 'FolderOpened' : 'TopRight'">{{ row.is_dir ? '打开文件夹' : '外部打开' }}</el-dropdown-item>
+                      <el-dropdown-item v-if="!row.is_dir" command="download" :icon="'Download'">下载</el-dropdown-item>
                       <el-dropdown-item command="rename" :icon="'Edit'">重命名</el-dropdown-item>
                       <el-dropdown-item command="delete" divided :icon="'Delete'" style="color: var(--sh-danger)">删除</el-dropdown-item>
                     </el-dropdown-menu></template>
@@ -353,6 +429,11 @@ watch(
       </section>
     </div>
     <!-- 底部统计 -->
+    <div v-if="!tab.connecting && linkState === 'off'" class="fm-recovery" role="alert">
+      <span>{{ tab.error || '文件连接已断开' }}</span>
+      <button type="button" @click="sessionStore.reconnect(tab.id)">重新连接</button>
+      <button type="button" @click="sessionStore.close(tab.id)">关闭标签</button>
+    </div>
     <footer class="fm-status" role="status">
       <span class="protocol-badge">{{ tab.session?.type.toUpperCase() || 'SFTP' }}</span>
       <span class="status-detail" v-if="opening">正在下载并打开…</span>
@@ -365,38 +446,43 @@ watch(
 </template>
 
 <style scoped>
-.file-manager { flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; background: #fff; container-type: inline-size; }
+.file-manager { flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--sh-bg-panel); container-type: inline-size; }
 .fm-toolbar { display: flex; align-items: center; gap: 14px; padding: 12px 18px; background: var(--sh-bg-elevated); border-bottom: 1px solid var(--sh-border); }
 .nav-btns, .fm-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
 .fm-icon-button { display: inline-grid; place-items: center; width: 30px; height: 30px; border: 0; border-radius: 6px; background: transparent; color: var(--sh-text-secondary); cursor: pointer; flex-shrink: 0; }
 .fm-icon-button:hover:not(:disabled), .fm-icon-button.active { background: var(--sh-bg-hover); color: var(--sh-accent); }
 .fm-icon-button:disabled { opacity: .35; cursor: default; }
-.path-box { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 5px 0 12px; border: 1px solid var(--sh-border); border-radius: 8px; background: #fff; }
+.path-box { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 5px 0 12px; border: 1px solid var(--sh-border); border-radius: 8px; background: var(--sh-bg-panel); }
 .path-icon { color: var(--sh-text-muted); flex-shrink: 0; }
 .breadcrumbs { display: flex; align-items: center; gap: 7px; flex: 1; overflow-x: auto; white-space: nowrap; scrollbar-width: none; }
 .path-segment { border: 0; padding: 5px 4px; border-radius: 4px; background: transparent; color: var(--sh-text-secondary); font-size: 12px; cursor: pointer; flex-shrink: 0; }
 .path-segment:hover { background: var(--sh-bg); color: var(--sh-accent); }
 .path-segment[aria-current] { color: var(--sh-text); font-weight: 600; }
-.path-divider { font-size: 10px; color: #a8aea7; flex-shrink: 0; }
+.path-divider { font-size: 10px; color: var(--sh-path-divider); flex-shrink: 0; }
 .path-edit { width: 26px; height: 26px; color: var(--sh-text-muted); }
 .path-form { flex: 1; min-width: 0; }
 .path-form input { width: 100%; border: 0; outline: 0; color: var(--sh-text); background: transparent; font: 12px var(--sh-font-mono); user-select: text; }
 .path-box:focus-within { border-color: var(--sh-accent); }
 .fm-workspace { display: flex; flex: 1; min-height: 0; }
-.directory-sidebar { display: flex; flex-direction: column; width: 184px; padding: 18px 10px 12px; flex-shrink: 0; background: #f6f6f2; border-right: 1px solid #ecece6; }
+.directory-sidebar { display: flex; flex-direction: column; width: clamp(132px, 28%, 220px); padding: 18px 10px 12px; flex-shrink: 0; min-width: 0; background: var(--sh-tree-bg); border-right: 1px solid var(--sh-tree-border); }
 .tree-heading { display: flex; justify-content: space-between; padding: 0 10px 16px; font-size: 12px; font-weight: 600; color: var(--sh-text-secondary); }
 .tree-heading > span { font-size: 10px; font-weight: 400; color: var(--sh-text-muted); }
-.directory-tree { flex: 1; overflow: auto; background: transparent; --el-tree-node-hover-bg-color: #eaece5; --el-tree-text-color: var(--sh-text-secondary); }
+.directory-tree { flex: 1; overflow: auto; background: transparent; --el-tree-node-hover-bg-color: var(--sh-tree-hover); --el-tree-text-color: var(--sh-text-secondary); }
 .directory-tree :deep(.el-tree-node__content) { height: 34px; border-radius: 6px; margin: 2px 0; }
-.directory-tree :deep(.el-tree-node.is-current > .el-tree-node__content) { background: #e3ebe1; color: #355944; font-weight: 600; }
-.directory-tree :deep(.el-tree-node__expand-icon) { color: #929c90; padding: 6px; }
+.directory-tree :deep(.el-tree-node.is-current > .el-tree-node__content) { background: var(--sh-tree-current); color: var(--sh-tree-current-text); font-weight: 600; }
+.directory-tree :deep(.el-tree-node__expand-icon) { color: var(--sh-tree-arrow); padding: 6px; }
 .directory-tree :deep(.el-tree-node__expand-icon.is-leaf) { color: transparent; }
 .tree-label { display: flex; align-items: center; gap: 9px; min-width: 0; padding-right: 10px; font-size: 12px; }
 .tree-label > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tree-placeholder { color: var(--sh-text-muted); font-size: 12px; padding: 0 10px; flex: 1; }
 .tree-host { display: flex; align-items: center; gap: 7px; color: var(--sh-text-muted); font-size: 10px; border-top: 1px solid var(--sh-border); padding: 14px 8px 0; margin-top: 12px; }
 .tree-host > span:first-of-type { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.connection-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--sh-success); }
+.connection-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--sh-text-muted); }
+.connection-dot.ok { background: var(--sh-success); }
+.connection-dot.pending { background: var(--sh-warning); }
+.tree-folder, .folder-icon, .folder-hero { flex-shrink: 0; color: var(--sh-ftp); }
+.folder-hero { font-size: 28px; }
+.folder-icon, .tree-folder { font-size: 16px; }
 .fm-content { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; padding: 0 22px; }
 .folder-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 26px 0 22px; flex-wrap: wrap; }
 .folder-title { display: flex; align-items: center; gap: 14px; min-width: 0; flex: 1; }
@@ -407,34 +493,27 @@ watch(
 .fm-actions :deep(.el-button) { margin-left: 0; font-size: 12px; }
 .file-controls { display: flex; align-items: center; justify-content: space-between; padding-bottom: 14px; gap: 12px; }
 .list-label { font-size: 12px; color: var(--sh-text-secondary); font-weight: 600; white-space: nowrap; }
-.list-label > span { display: inline-block; margin-left: 5px; padding: 2px 6px; background: #f0f2ed; border-radius: 5px; font-size: 10px; font-weight: 500; color: var(--sh-text-muted); }
+.list-label > span { display: inline-block; margin-left: 5px; padding: 2px 6px; background: var(--sh-count-bg); border-radius: 5px; font-size: 10px; font-weight: 500; color: var(--sh-text-muted); }
 .file-search { max-width: 218px; font-size: 12px; }
-.file-search :deep(.el-input__wrapper) { background: #f7f8f5 !important; box-shadow: none !important; }
+.file-search :deep(.el-input__wrapper) { background: var(--sh-search-bg) !important; box-shadow: none !important; }
+.upload-input { display: none; }
 .fm-table-wrap { flex: 1; min-height: 0; overflow: auto; padding-bottom: 12px; }
 .file-columns, .fm-row { display: grid; grid-template-columns: minmax(130px, 1fr) 138px 65px 28px; align-items: center; gap: 14px; padding: 0 10px; }
-.file-columns { position: sticky; top: 0; z-index: 1; height: 34px; background: #fff; color: var(--sh-text-muted); border-top: 1px solid #eef0eb; border-bottom: 1px solid #eef0eb; font-size: 11px; }
-.file-columns > span:first-child { display: flex; align-items: center; gap: 7px; }
+.file-columns { position: sticky; top: 0; z-index: 1; height: 34px; background: var(--sh-bg-panel); color: var(--sh-text-muted); border-top: 1px solid var(--sh-column-line); border-bottom: 1px solid var(--sh-column-line); font-size: 11px; }
+.file-columns > button { display: flex; align-items: center; gap: 7px; border: 0; padding: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; text-align: left; }
 .file-columns .el-icon { font-size: 10px; }
 .file-rows { padding-top: 5px; }
 /* 紧凑行高≈ 36px */
 .fm-row { min-height: 38px; border: 1px solid transparent; border-radius: 7px; cursor: default; margin: 1px 0; transition: background .12s; }
-.fm-row:hover { background: #f5f7f3; }
-.fm-row.selected { background: #eaf1e7; border-color: #d9e6d4; }
+.fm-row:hover { background: var(--sh-row-hover); }
+.fm-row.selected { background: var(--sh-row-selected); border-color: var(--sh-row-selected-border); }
 .fm-row:focus-visible { outline-offset: -2px; }
 .f-name { display: flex; align-items: center; gap: 12px; min-width: 0; font-size: 12px; }
 .file-name-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .is-hidden .file-name-text { color: var(--sh-text-muted); }
 .folder-arrow { opacity: 0; color: var(--sh-text-muted); margin-left: auto; flex-shrink: 0; font-size: 10px; }
 .fm-row:hover .folder-arrow { opacity: 1; }
-.folder-glyph { position: relative; display: inline-block; width: 27px; height: 19px; margin-top: 3px; border-radius: 2px 3px 4px 4px; background: linear-gradient(155deg, #ead092, #dcb267); box-shadow: inset 0 1px 0 #f7e5b9, 0 1px 1px #b99b5630; flex-shrink: 0; }
-.folder-glyph::before { content: ''; position: absolute; left: 0; top: -4px; width: 12px; height: 6px; border-radius: 3px 3px 0 0; background: #d3ad66; }
-.folder-glyph::after { content: ''; position: absolute; inset: 2px 0 0; border-radius: 2px 3px 4px 4px; background: linear-gradient(155deg, #f0d799, #e2bd75); border-top: 1px solid #f7e7c0; }
-.folder-glyph.small { width: 17px; height: 12px; margin-top: 2px; }
-.folder-glyph.small::before { width: 8px; height: 4px; top: -2px; }
-.folder-glyph.expanded::after { transform: skewX(-8deg) translateX(-1px); }
-.folder-glyph.hero { width: 42px; height: 30px; }
-.folder-glyph.hero::before { width: 19px; top: -5px; height: 8px; }
-.file-glyph { width: 27px; height: 29px; display: grid; place-items: center; border: 1px solid #dfe4e2; border-radius: 4px; color: #8b9997; background: #f7f9f8; flex-shrink: 0; font-size: 18px; box-sizing: border-box; }
+.file-glyph { width: 27px; height: 29px; display: grid; place-items: center; border: 1px solid var(--sh-file-glyph-border); border-radius: 4px; color: var(--sh-file-glyph-color); background: var(--sh-file-glyph-bg); flex-shrink: 0; font-size: 18px; box-sizing: border-box; }
 .file-glyph.code { color: #6d8fa5; background: #f0f5f8; border-color: #dae6ed; }
 .file-glyph.config { color: #8a87aa; background: #f4f2f9; border-color: #e3dfef; }
 .file-glyph.archive { color: #ad916a; background: #faf5ec; border-color: #eae1cf; }
@@ -445,7 +524,11 @@ watch(
 .fm-row:hover .row-more, .fm-row:focus-within .row-more, .fm-row.selected .row-more { opacity: 1; }
 .fm-error, .fm-blank { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 44px 16px; text-align: center; color: var(--sh-text-muted); font-size: 12px; }
 .fm-error { flex: 1; }
-.fm-blank > .el-icon { color: #b4bcae; margin-bottom: 4px; }
+.fm-blank > .el-icon { color: var(--sh-blank-icon); margin-bottom: 4px; }
+.error-actions, .fm-recovery { display: flex; align-items: center; gap: 8px; }
+.fm-recovery { min-height: 36px; padding: 0 16px; border-top: 1px solid var(--sh-border); background: var(--sh-warning-bg); color: var(--sh-warning-text); font-size: 12px; }
+.fm-recovery span { flex: 1; }
+.fm-recovery button { border: 0; border-radius: 6px; background: transparent; color: var(--sh-text); font-size: 12px; cursor: pointer; }
 .fm-blank strong, .fm-error-title { color: var(--sh-text-secondary); font-size: 14px; font-weight: 500; margin: 0; }
 .fm-error-msg { max-width: 420px; overflow-wrap: anywhere; margin: 0 0 8px; }
 .fm-status { min-height: 34px; flex-shrink: 0; display: flex; align-items: center; gap: 12px; padding: 0 16px; font-size: 10px; color: var(--sh-text-muted); border-top: 1px solid var(--sh-border); background: var(--sh-bg-elevated); }
@@ -454,13 +537,13 @@ watch(
 .status-kind { margin-left: 10px; color: var(--sh-text-muted); }
 .status-count { margin-left: auto; white-space: nowrap; }
 @container (max-width: 780px) {
-  .directory-sidebar { width: 150px; padding-inline: 6px; }
+  .directory-sidebar { width: clamp(120px, 24%, 160px); padding-inline: 6px; }
   .fm-content { padding: 0 14px; }
   .folder-heading { padding-block: 20px 16px; }
   .folder-title h2 { font-size: 18px; }
-  .folder-glyph.hero { width: 32px; height: 23px; }
+  .folder-hero { font-size: 22px; }
   .file-columns, .fm-row { grid-template-columns: minmax(100px, 1fr) 65px 26px; gap: 10px; }
-  .f-time, .file-columns > span:nth-child(2) { display: none; }
+  .f-time, .file-columns > :nth-child(2) { display: none; }
 }
 @container (max-width: 540px) {
   .directory-sidebar { width: 120px; }

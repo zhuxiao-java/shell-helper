@@ -14,6 +14,7 @@ export interface Tab {
   kind: 'terminal' | 'files'
   session: Session | null
   connecting: boolean
+  error: string
 }
 
 export const useSessionStore = defineStore('sessions', () => {
@@ -32,7 +33,8 @@ export const useSessionStore = defineStore('sessions', () => {
       hostId,
       kind,
       session: null,
-      connecting: true
+      connecting: true,
+      error: ''
     })
     tabs.value.push(tab)
     activeId.value = tab.id
@@ -40,6 +42,7 @@ export const useSessionStore = defineStore('sessions', () => {
   }
 
   async function connect(tab: Tab, type: Session['type']): Promise<void> {
+    tab.error = ''
     try {
       const session = tab.hostId
         ? await sessionApi.openSession(tab.hostId, type)
@@ -51,11 +54,33 @@ export const useSessionStore = defineStore('sessions', () => {
       tab.session = session
       if (tab.hostId) recordConnect(tab.hostId)
     } catch (err) {
-      ElMessage.error(`连接失败: ${(err as Error).message}`)
-      close(tab.id)
+      tab.error = (err as Error).message || '连接失败'
+      ElMessage.error(`连接失败: ${tab.error}`)
     } finally {
       tab.connecting = false
     }
+  }
+
+  async function reconnect(id: string): Promise<void> {
+    const tab = tabs.value.find((item) => item.id === id)
+    if (!tab || tab.connecting) return
+    const previous = tab.session
+    tab.session = null
+    tab.error = ''
+    tab.connecting = true
+    if (previous) {
+      window.shellHelper.detachEdits(previous.session_id)
+        .catch(() => undefined)
+        .finally(() => sessionApi.closeSession(previous.session_id).catch(() => undefined))
+    }
+    const host = hostStore.byId(tab.hostId)
+    if (tab.kind === 'files' && (!host || !isFileProto(host.protocol))) {
+      tab.error = '该连接不支持文件管理'
+      tab.connecting = false
+      return
+    }
+    const type = tab.kind === 'files' && host ? fileSessionType(host.protocol) : 'terminal'
+    await connect(tab, type)
   }
 
   async function openLocalTerminal(): Promise<string> {
@@ -118,5 +143,5 @@ export const useSessionStore = defineStore('sessions', () => {
     }
   }
 
-  return { tabs, activeId, active, openLocalTerminal, openTerminal, openFiles, openDefault, focus, close }
+  return { tabs, activeId, active, openLocalTerminal, openTerminal, openFiles, openDefault, focus, close, reconnect }
 })

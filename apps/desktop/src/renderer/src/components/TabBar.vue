@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, ref, watch } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useSessionStore } from '@renderer/stores/session'
 import { useHostStore } from '@renderer/stores/host'
 import type { Protocol } from '@renderer/api/types'
@@ -9,6 +9,19 @@ const sessionStore = useSessionStore()
 const hostStore = useHostStore()
 
 const scrollRef = ref<HTMLDivElement>()
+const canScrollLeft = ref(false)
+const canScrollRight = ref(false)
+
+function updateOverflow(): void {
+  const el = scrollRef.value
+  if (!el) return
+  canScrollLeft.value = el.scrollLeft > 4
+  canScrollRight.value = el.scrollLeft + el.clientWidth < el.scrollWidth - 4
+}
+
+function scrollTabs(delta: number): void {
+  scrollRef.value?.scrollBy({ left: delta, behavior: 'smooth' })
+}
 
 function onNavigate(event: KeyboardEvent, id: string): void {
   if (event.target !== event.currentTarget) return
@@ -39,13 +52,24 @@ watch(
     scrollRef.value
       ?.querySelector('.tab-item.active')
       ?.scrollIntoView({ inline: 'nearest', block: 'nearest' })
+    updateOverflow()
   }
 )
+onMounted(() => {
+  scrollRef.value?.addEventListener('scroll', updateOverflow)
+  window.addEventListener('resize', updateOverflow)
+  updateOverflow()
+})
+onBeforeUnmount(() => {
+  scrollRef.value?.removeEventListener('scroll', updateOverflow)
+  window.removeEventListener('resize', updateOverflow)
+})
 </script>
 
 <template>
   <div class="tab-bar">
-    <div ref="scrollRef" class="tab-scroll" role="tablist" aria-label="工作空间标签">
+    <button v-show="canScrollLeft" class="tab-scroll-btn" type="button" aria-label="向左滚动标签" @click="scrollTabs(-180)"><el-icon><ArrowLeft /></el-icon></button>
+    <div ref="scrollRef" class="tab-scroll" :class="{ 'fade-left': canScrollLeft, 'fade-right': canScrollRight }" role="tablist" aria-label="工作空间标签">
       <!-- 常驻起始页:点击回到工作台,不影响已打开会话 -->
       <button
         class="tab-item home-tab"
@@ -72,6 +96,8 @@ watch(
         :tabindex="tab.id === sessionStore.activeId ? 0 : -1"
         :title="tab.title"
         @click="sessionStore.focus(tab.id)"
+        @mousedown="(event: MouseEvent) => { if (event.button === 1) event.preventDefault() }"
+        @auxclick="(event: MouseEvent) => { if (event.button === 1) sessionStore.close(tab.id) }"
         @keydown="onNavigate($event, tab.id)"
         @keydown.enter.self.prevent="sessionStore.focus(tab.id)"
         @keydown.space.self.prevent="sessionStore.focus(tab.id)"
@@ -85,15 +111,24 @@ watch(
         <!-- 连接状态(与协议图标分离) -->
         <i
           class="status-dot"
-          :class="tab.connecting ? 'pending' : tab.session?.status === 'closed' ? 'disconnected' : 'connected'"
-          :title="tab.connecting ? '连接中' : tab.session?.status === 'closed' ? '已结束' : '已连接'"
+          :class="tab.connecting ? 'pending' : (!tab.session || tab.error || tab.session.status === 'closed' ? 'disconnected' : 'connected')"
+          :title="tab.connecting ? '连接中' : (!tab.session || tab.error || tab.session.status === 'closed' ? '已结束' : '已连接')"
         ></i>
         <button class="tab-close" :aria-label="`关闭 ${tab.title}`" title="关闭标签" @click.stop="sessionStore.close(tab.id)">
           <el-icon><Close /></el-icon>
         </button>
       </div>
     </div>
-    <button class="tab-add" title="新建连接" aria-label="新建连接" @click="emit('new-host')"><el-icon><Plus /></el-icon></button>
+    <button v-show="canScrollRight" class="tab-scroll-btn" type="button" aria-label="向右滚动标签" @click="scrollTabs(180)"><el-icon><ArrowRight /></el-icon></button>
+    <el-dropdown trigger="click" @command="(command: string) => command === 'local' ? sessionStore.openLocalTerminal() : emit('new-host')">
+      <button class="tab-add" title="新建会话" aria-label="新建会话" type="button"><el-icon><Plus /></el-icon></button>
+      <template #dropdown>
+        <el-dropdown-menu>
+          <el-dropdown-item command="connection">新建连接</el-dropdown-item>
+          <el-dropdown-item command="local">本地终端</el-dropdown-item>
+        </el-dropdown-menu>
+      </template>
+    </el-dropdown>
   </div>
 </template>
 
@@ -114,12 +149,25 @@ watch(
   gap: 4px;
   overflow-x: auto;
   flex: 1;
-  scrollbar-width: none;
+  scrollbar-width: thin;
   padding: 4px 2px;
   min-width: 0;
 }
-.tab-scroll::-webkit-scrollbar {
-  display: none;
+.tab-scroll::-webkit-scrollbar { height: 4px; }
+.tab-scroll.fade-left { mask-image: linear-gradient(90deg, transparent, #000 16px); }
+.tab-scroll.fade-right { mask-image: linear-gradient(90deg, #000 calc(100% - 16px), transparent); }
+.tab-scroll.fade-left.fade-right { mask-image: linear-gradient(90deg, transparent, #000 16px, #000 calc(100% - 16px), transparent); }
+.tab-scroll-btn {
+  align-self: center;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--sh-text-muted);
+  cursor: pointer;
 }
 .tab-divider {
   width: 1px;

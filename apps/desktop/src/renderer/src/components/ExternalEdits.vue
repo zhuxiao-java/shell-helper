@@ -42,7 +42,7 @@ async function openDrafts(): Promise<void> {
 .edit-heading, .edit-actions { display: flex; align-items: center; gap: 10px; }
 .edit-heading { justify-content: space-between; font-size: 13px; }
 .edit-actions > span { flex: 1; }
-.edit-card .edit-message { color: var(--sh-warning); }
-.edit-prompt { position: fixed; right: 24px; bottom: 44px; z-index: 1900; max-width: 650px; display: flex; align-items: center; gap: 10px; padding: 16px; border: 1px solid var(--sh-accent-border); border-radius: 12px; background: var(--sh-bg-panel); box-shadow: 0 8px 28px #0002; font-size: 13px; }
-.edit-prompt p { max-width: 330px; margin: 6px 0 0; font-size: 12px; color: var(--sh-text-secondary); overflow-wrap: anywhere; }
+.edit-card .edit-message { color: var(--sh-warning-text); }
+.edit-prompt { z-index: 5; display: flex; align-items: center; gap: 10px; margin: 0 10px; padding: 10px 14px; border: 1px solid var(--sh-accent-border); border-radius: 10px 10px 0 0; background: var(--sh-bg-panel); font-size: 13px; }
+.edit-prompt p { max-width: 420px; margin: 4px 0 0; font-size: 12px; color: var(--sh-text-secondary); overflow-wrap: anywhere; }
 </style>

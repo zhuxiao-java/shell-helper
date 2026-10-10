@@ -68,6 +68,18 @@ function addCommand(): void {
 <template>
   <el-dialog v-model="store.visible" title="设置" width="760px" top="7vh" :close-on-click-modal="false" :close-on-press-escape="!store.recording" destroy-on-close>
     <el-tabs v-model="section">
+      <el-tab-pane label="外观" name="appearance">
+        <p class="setting-note">默认保持浅色外壳。选择「跟随系统」后，外壳会随系统浅色或深色切换；终端区域始终为深色。</p>
+        <el-radio-group v-model="draft.appearance" class="editor-options">
+          <el-radio value="light">浅色</el-radio>
+          <el-radio value="dark">深色</el-radio>
+          <el-radio value="system">跟随系统</el-radio>
+        </el-radio-group>
+        <div class="font-size">
+          <span>终端字号</span>
+          <el-input-number v-model="draft.terminal.fontSize" :min="12" :max="24" />
+        </div>
+      </el-tab-pane>
       <el-tab-pane label="快捷键" name="shortcuts">
         <p class="setting-note">快捷键仅在应用内生效。输入框、弹窗和输入法优先；终端保留 Ctrl 控制键，请使用带 Shift/Alt 的组合。</p>
         <div v-for="(label, id) in ACTIONS" :key="id" class="binding-row">
@@ -129,7 +141,8 @@ function addCommand(): void {
 
 <style scoped>
 .setting-note { font-size: 12px; line-height: 1.8; color: var(--sh-text-muted); margin: 0 0 18px; }
-.binding-row { display: grid; grid-template-columns: 1fr 300px 40px; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--sh-border); font-size: 13px; }
+.binding-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(160px, 300px) 40px; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--sh-border); font-size: 13px; }
+.font-size { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; }
 .command-card { padding: 16px; margin-bottom: 14px; border: 1px solid var(--sh-border); border-radius: 10px; display: grid; gap: 12px; background: var(--sh-bg-elevated); }
 .command-heading, .editor-path, .settings-footer { display: flex; align-items: center; gap: 12px; }
 .settings-footer > span { flex: 1; }
@@ -139,14 +152,14 @@ function addCommand(): void {
 .storage-intro { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin: 8px 0 20px; }
 .storage-intro h3 { font-size: 17px; font-weight: 600; margin: 0 0 8px; color: var(--sh-text); }
 .storage-intro p, .storage-heading p { font-size: 12px; line-height: 1.7; color: var(--sh-text-muted); margin: 0; }
-.storage-card { padding: 16px 18px; margin-bottom: 12px; border: 1px solid var(--sh-border); border-radius: 10px; background: #fcfcfa; }
+.storage-card { padding: 16px 18px; margin-bottom: 12px; border: 1px solid var(--sh-border); border-radius: 10px; background: var(--sh-storage-card); }
 .storage-heading { display: flex; gap: 12px; align-items: flex-start; }
-.storage-icon { width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; flex-shrink: 0; color: var(--sh-accent); background: #eaf0e6; font-size: 18px; }
+.storage-icon { width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; flex-shrink: 0; color: var(--sh-accent); background: var(--sh-storage-icon-bg); font-size: 18px; }
 .storage-heading h4 { font-size: 13px; font-weight: 600; margin: 0 0 4px; color: var(--sh-text); }
-.storage-path { display: block; margin: 12px 0 10px; padding: 10px 12px; border: 1px solid #eceee7; border-radius: 6px; background: #f3f5f0; color: #56634f; font: 11px/1.7 var(--sh-font-mono); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; cursor: text; }
+.storage-path { display: block; margin: 12px 0 10px; padding: 10px 12px; border: 1px solid var(--sh-storage-path-border); border-radius: 6px; background: var(--sh-storage-path-bg); color: var(--sh-storage-path-text); font: 11px/1.7 var(--sh-font-mono); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; cursor: text; }
 .storage-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .storage-actions :deep(.el-button + .el-button) { margin-left: 0; }
-.storage-warning { padding: 10px 12px; background: #faf2e4; color: #856837; border-radius: 6px; font-size: 12px; line-height: 1.7; }
+.storage-warning { padding: 10px 12px; background: var(--sh-warning-bg); color: var(--sh-warning-text); border-radius: 6px; font-size: 12px; line-height: 1.7; }
 .storage-unavailable { font-size: 12px; color: var(--sh-text-muted); }
 .storage-safety { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--sh-text-muted); line-height: 1.7; }
 </style>

@@ -15,6 +15,7 @@ from functools import wraps
 from dataclasses import dataclass
 
 MAX_CONTENT_BYTES = 10 * 1024 * 1024
+MAX_TRANSFER_BYTES = 32 * 1024 * 1024
 TRANSFER_TIMEOUT = 30
 
 
@@ -86,7 +87,7 @@ class FileProvider:
         self.closed = False
 
     def __init_subclass__(cls):
-        for name in ("list", "mkdir", "rename", "remove", "is_dir", "read_content", "write_content", "close"):
+        for name in ("list", "mkdir", "rename", "remove", "is_dir", "read_content", "write_content", "read_bytes", "write_bytes", "close"):
             if name in cls.__dict__:
                 setattr(cls, name, serialized(cls.__dict__[name]))
 
@@ -191,6 +192,43 @@ class SftpProvider(FileProvider):
             except OSError:
                 pass
         return digest(data)
+
+    def read_bytes(self, path: str) -> bytes:
+        attr = self._sftp.lstat(path)
+        mode = attr.st_mode or 0
+        if not statmod.S_ISREG(mode):
+            raise ContentError(400, "只能传输普通文件")
+        if (attr.st_size or 0) > MAX_TRANSFER_BYTES:
+            raise ContentError(413, "文件超过 32 MiB 上限")
+        deadline = time.monotonic() + TRANSFER_TIMEOUT
+        data = bytearray()
+        with self._sftp.open(path, "rb") as stream:
+            while True:
+                if time.monotonic() > deadline:
+                    raise TimeoutError()
+                block = stream.read(65536)
+                if not block:
+                    break
+                data.extend(block)
+                if len(data) > MAX_TRANSFER_BYTES:
+                    raise ContentError(413, "文件超过 32 MiB 上限")
+        return bytes(data)
+
+    def write_bytes(self, path: str, data: bytes) -> None:
+        if len(data) > MAX_TRANSFER_BYTES:
+            raise ContentError(413, "文件超过 32 MiB 上限")
+        try:
+            mode = self._sftp.lstat(path).st_mode or 0
+        except OSError:
+            mode = 0
+        if mode and not statmod.S_ISREG(mode):
+            raise ContentError(400, "只能传输普通文件")
+        deadline = time.monotonic() + TRANSFER_TIMEOUT
+        with self._sftp.open(path, "wb") as stream:
+            for offset in range(0, len(data), 65536):
+                if time.monotonic() > deadline:
+                    raise TimeoutError()
+                stream.write(data[offset:offset + 65536])
 
     def close(self) -> None:
         self.closed = True

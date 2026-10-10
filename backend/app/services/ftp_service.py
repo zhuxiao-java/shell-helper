@@ -15,7 +15,7 @@ from ftplib import FTP, error_perm
 
 from ..models import Host
 from .file_provider import (FileProvider, FileStat, ContentError, MAX_CONTENT_BYTES,
-                            TRANSFER_TIMEOUT, digest, validate_text)
+                            MAX_TRANSFER_BYTES, TRANSFER_TIMEOUT, digest, validate_text)
 
 
 def connect(host: Host, password: str | None) -> FTP:
@@ -188,6 +188,51 @@ class FtpProvider(FileProvider):
             return True
         except error_perm:
             return False
+
+    def _entry(self, path: str) -> FileStat | None:
+        parent, name = posixpath.split(path)
+        return next((item for item in self.list(parent or ".") if item.name == name), None)
+
+    def read_bytes(self, path: str) -> bytes:
+        entry = self._entry(path)
+        if entry is None:
+            raise ContentError(404, "远程文件不存在")
+        if entry.is_dir or not entry.mode.startswith("-"):
+            raise ContentError(400, "只能传输普通文件")
+        if entry.size > MAX_TRANSFER_BYTES:
+            raise ContentError(413, "文件超过 32 MiB 上限")
+        data = bytearray()
+        deadline = time.monotonic() + TRANSFER_TIMEOUT
+
+        def receive(block: bytes) -> None:
+            if time.monotonic() > deadline:
+                raise TimeoutError()
+            if len(data) + len(block) > MAX_TRANSFER_BYTES:
+                raise ContentError(413, "文件超过 32 MiB 上限")
+            data.extend(block)
+
+        try:
+            self._ftp.retrbinary(f"RETR {path}", receive, blocksize=65536)
+        except error_perm as e:
+            raise ContentError(403, "无法读取文件：不存在或权限不足") from e
+        return bytes(data)
+
+    def write_bytes(self, path: str, data: bytes) -> None:
+        if len(data) > MAX_TRANSFER_BYTES:
+            raise ContentError(413, "文件超过 32 MiB 上限")
+        entry = self._entry(path)
+        if entry and (entry.is_dir or not entry.mode.startswith("-")):
+            raise ContentError(400, "只能传输普通文件")
+        deadline = time.monotonic() + TRANSFER_TIMEOUT
+
+        def sent(_block: bytes) -> None:
+            if time.monotonic() > deadline:
+                raise TimeoutError()
+
+        try:
+            self._ftp.storbinary(f"STOR {path}", io.BytesIO(data), blocksize=65536, callback=sent)
+        except error_perm as e:
+            raise ContentError(403, "没有上传权限") from e
 
     def close(self) -> None:
         self.closed = True
