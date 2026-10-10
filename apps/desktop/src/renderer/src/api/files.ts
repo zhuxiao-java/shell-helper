@@ -14,6 +14,11 @@ export async function mkdir(sessionId: string, path: string): Promise<void> {
   await http.post('/api/files/mkdir', null, { params: { session_id: sessionId, path } })
 }
 
+export async function createFile(sessionId: string, path: string): Promise<void> {
+  const http = await getHttp()
+  await http.post('/api/files/create', null, { params: { session_id: sessionId, path } })
+}
+
 export async function rename(sessionId: string, oldPath: string, newPath: string): Promise<void> {
   const http = await getHttp()
   await http.post('/api/files/rename', null, {

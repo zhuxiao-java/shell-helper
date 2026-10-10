@@ -235,6 +235,18 @@ async function onNewDir(): Promise<void> {
   await refresh()
 }
 
+async function onNewFile(): Promise<void> {
+   const sid = props.tab.session?.session_id
+   if (!sid) return
+   const { value } = await ElMessageBox.prompt('文件名称', '新建文件', { inputPattern: /\S+/ })
+   const newPath = join(cwd.value, value)
+   await fileApi.createFile(sid, newPath)
+   ElMessage.success('已创建')
+   await refresh()
+   const created = entries.value.find(e => e.path === newPath && !e.is_dir)
+   if (created) await open(created)
+}
+
 async function onDelete(entry: FileEntry): Promise<void> {
   const sid = props.tab.session?.session_id
   if (!sid) return
@@ -312,6 +324,12 @@ async function createFolder(): Promise<void> {
 }
 
 watch(cwd, (path) => { sessionMeta.path[props.tab.id] = path })
+
+async function createFileAction(): Promise<void> {
+  try { await onNewFile() }
+  catch (error) { if (error !== 'cancel' && error !== 'close') ElMessage.error((error as Error).message || '创建失败') }
+}
+
 watch(
   () => [props.visible, props.tab.session?.session_id, props.tab.connecting] as const,
   ([vis, sessionId, connecting], previous) => {
@@ -374,6 +392,7 @@ watch(
             <input ref="uploadInput" class="upload-input" type="file" aria-label="选择要上传的文件" @change="onUpload" />
             <el-button text :loading="opening" :disabled="!selected || selected.is_dir || loading || !!loadError" :title="settings.hint('openFile')" :icon="'TopRight'" @click="selected && open(selected)">外部打开</el-button>
             <el-button :icon="'Upload'" :loading="transferring" :disabled="!loaded || loading || !!loadError || linkState !== 'ok'" @click="uploadInput?.click()">上传</el-button>
+            <el-button :icon="'DocumentAdd'" :disabled="!loaded || loading || !!loadError" @click="createFileAction">新建文件</el-button>
             <el-button :icon="'FolderAdd'" :disabled="!loaded || loading || !!loadError" @click="createFolder">新建文件夹</el-button>
           </div>
         </header>
