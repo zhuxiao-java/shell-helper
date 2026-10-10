@@ -10,13 +10,13 @@ import FileManager from '@renderer/components/FileManager.vue'
 import HostFormDialog from '@renderer/components/HostFormDialog.vue'
 import { ensureConn } from '@renderer/api/client'
 import { getRecents } from '@renderer/utils/recent'
-import type { Host, Protocol } from '@renderer/api/types'
+import { isFileProto, isTerminalProto, type Host, type Protocol } from '@renderer/api/types'
 import { useSettingsStore } from '@renderer/stores/settings'
 import { useExternalStore } from '@renderer/stores/external'
 import SettingsDialog from '@renderer/components/SettingsDialog.vue'
 import ExternalEdits from '@renderer/components/ExternalEdits.vue'
 import { installShortcuts } from '@renderer/utils/shortcuts'
-import { fileBridges, terminalBridges } from '@renderer/utils/workspace'
+import { fileBridges, sessionMeta, terminalBridges } from '@renderer/utils/workspace'
 import { validCommand, type ActionId, type TerminalCommand } from '../../shared/settings'
 
 const hostStore = useHostStore()
@@ -35,6 +35,20 @@ let disposeShortcuts: (() => void) | undefined
 let disposeEdits: (() => void) | undefined
 
 const activeTab = computed(() => sessionStore.active())
+const activeDetail = computed(() => {
+  const tab = activeTab.value
+  if (!tab) return ''
+  if (tab.kind === 'terminal') {
+    const size = sessionMeta.terminal[tab.id]
+    return size ? `${size.cols} × ${size.rows}` : ''
+  }
+  return sessionMeta.path[tab.id] || ''
+})
+const themeQuery = window.matchMedia('(prefers-color-scheme: dark)')
+function applyAppearance(): void {
+  const mode = settings.value.appearance
+  document.documentElement.classList.toggle('theme-dark', mode === 'dark' || (mode === 'system' && themeQuery.matches))
+}
 const terminalTabs = computed(() => sessionStore.tabs.filter((t) => t.kind === 'terminal'))
 const fileTabs = computed(() => sessionStore.tabs.filter((t) => t.kind === 'files'))
 
@@ -178,6 +192,8 @@ function requestCommand(command: TerminalCommand): boolean {
 }
 
 onMounted(async () => {
+  applyAppearance()
+  themeQuery.addEventListener('change', applyAppearance)
   loadSidebarPrefs()
   disposeShortcuts = installShortcuts({
     settings: () => settings.value, mac: settings.mac,
@@ -201,7 +217,8 @@ onMounted(async () => {
   }
 })
 
-onBeforeUnmount(() => { disposeShortcuts?.(); disposeEdits?.() })
+onBeforeUnmount(() => { themeQuery.removeEventListener('change', applyAppearance); disposeShortcuts?.(); disposeEdits?.() })
+watch(() => settings.value.appearance, applyAppearance)
 
 // 回到欢迎页(无活动会话)时刷新最近连接
 watch(
@@ -220,7 +237,7 @@ watch(
         <div class="brand-logo" aria-hidden="true">›_</div>
         <span class="brand-name">Shell Helper</span>
       </div>
-      <span class="ws-name">{{ workspaceName }}</span>
+      <span class="ws-name" :title="workspaceName">{{ workspaceName }}</span>
       <div class="header-actions">
         <el-dropdown v-if="commandAvailable" trigger="click" @command="(id: string) => { const cmd = settings.value.commands.find(c => c.id === id); if (cmd) requestCommand(cmd) }">
           <button class="header-new" aria-label="终端命令">终端命令 <el-icon><ArrowDown /></el-icon></button>
@@ -232,7 +249,7 @@ watch(
         <button class="header-new" @click="external.visible = true">外部编辑{{ external.pending.length ? ` · ${external.pending.length}` : '' }}</button>
         <button class="icon-btn" aria-label="打开本地终端" title="打开本地终端" :disabled="!backendReady" @click="sessionStore.openLocalTerminal()"><el-icon><Monitor /></el-icon></button>
         <button class="icon-btn" aria-label="打开设置" :title="`设置 ${settings.hint('openSettings')}`" @click="settings.visible = true"><el-icon><Setting /></el-icon></button>
-        <button class="header-new" @click="openForm()" aria-label="新建连接">
+        <button class="header-new is-primary" @click="openForm()" aria-label="新建连接">
           <el-icon><Plus /></el-icon>
           <span>新建连接</span>
         </button>
@@ -273,7 +290,7 @@ watch(
         <!-- 起始页 / 工作台(无活动会话) -->
         <section v-show="!sessionStore.activeId" class="workbench">
           <div class="wb-inner">
-            <div class="wb-head">
+            <div class="wb-head" :class="{ compact: hostStore.hosts.length > 0 }">
               <div class="wb-mark" aria-hidden="true">›<span>_</span></div>
               <div class="wb-eyebrow">SHELL HELPER / 你的连接，从这里开始</div>
               <h1 class="wb-title">连接，然后专注。</h1>
@@ -311,12 +328,15 @@ watch(
                 <button v-if="!sidebarVisible" class="text-action" @click="toggleSidebar">显示侧栏</button>
               </div>
               <div v-else-if="startConnections.length" class="connection-list">
-                <button
+                <div
                   v-for="r in startConnections"
                   :key="r.host.id"
                   class="connection-row"
+                  role="button"
+                  tabindex="0"
                   :title="hostAddress(r.host)"
                   @click="sessionStore.openDefault(r.host.id)"
+                  @keydown.enter.prevent="sessionStore.openDefault(r.host.id)"
                 >
                   <span class="connection-icon" :class="`proto-${r.host.protocol}`">
                     <el-icon><FolderOpened v-if="['sftp', 'ftp'].includes(r.host.protocol)" /><Monitor v-else /></el-icon>
@@ -327,8 +347,11 @@ watch(
                   </span>
                   <span class="proto-tag">{{ r.host.protocol.toUpperCase() }}</span>
                   <span class="cc-time">{{ r.ts ? relTime(r.ts) : r.host.group }}</span>
-                  <el-icon class="connect-arrow"><Right /></el-icon>
-                </button>
+                  <span class="connection-actions" @click.stop>
+                    <button v-if="isTerminalProto(r.host.protocol)" type="button" @click="sessionStore.openTerminal(r.host.id)">终端</button>
+                    <button v-if="isFileProto(r.host.protocol)" type="button" @click="sessionStore.openFiles(r.host.id)">文件</button>
+                  </span>
+                </div>
               </div>
               <div v-else class="wb-empty">
                 <el-icon><Connection /></el-icon>
@@ -363,6 +386,8 @@ watch(
       </main>
     </div>
 
+    <ExternalEdits :blocked="formVisible || settings.visible || confirmingCommand" />
+
     <!-- 底部状态栏 -->
     <footer class="sh-statusbar">
       <span class="status-item">
@@ -377,6 +402,7 @@ watch(
         <el-icon><Connection /></el-icon>
         {{ hostStore.hosts.length }} 个连接
       </span>
+      <span v-if="activeDetail" class="status-item">{{ activeDetail }}</span>
       <span v-if="activeTab" class="status-item active-info">
         <el-icon><Connection /></el-icon>
         {{ activeTab.title }}
@@ -387,7 +413,6 @@ watch(
 
     <HostFormDialog v-model="formVisible" :edit-host="editingHost" :initial-protocol="initialProtocol" />
     <SettingsDialog />
-    <ExternalEdits :blocked="formVisible || settings.visible || confirmingCommand" />
   </div>
 </template>
 
@@ -417,7 +442,7 @@ watch(
   display: grid;
   place-items: center;
   background: var(--sh-ink);
-  color: #e6efdf;
+  color: var(--sh-logo-fg);
   font: 700 18px var(--sh-font-mono);
   flex-shrink: 0;
 }
@@ -454,6 +479,8 @@ watch(
   cursor: pointer;
 }
 .header-new:hover { background: var(--sh-bg-active); }
+.header-new.is-primary { background: var(--sh-ink); color: var(--sh-on-ink); }
+.header-new.is-primary:hover { background: var(--sh-ink-hover); }
 .sh-main.sidebar-hidden { margin-left: 10px; }
 .icon-btn {
   width: 30px;
@@ -494,6 +521,11 @@ watch(
   padding: clamp(32px, 5vh, 48px) 40px 28px;
 }
 .wb-head { margin-bottom: 28px; }
+.wb-head.compact { margin-bottom: 16px; }
+.wb-head.compact .wb-mark,
+.wb-head.compact .wb-eyebrow,
+.wb-head.compact .wb-description { display: none; }
+.wb-head.compact .wb-title { font-size: 22px; letter-spacing: -0.6px; }
 .wb-mark {
   width: 56px;
   height: 56px;
@@ -501,9 +533,9 @@ watch(
   align-items: center;
   justify-content: center;
   margin-bottom: 22px;
-  border: 1px solid #cbd8c8;
+  border: 1px solid var(--sh-mark-border);
   border-radius: 18px;
-  background: #e7eddf;
+  background: var(--sh-mark-bg);
   color: var(--sh-accent);
   font: 500 42px var(--sh-font-mono);
   letter-spacing: -5px;
@@ -556,14 +588,14 @@ watch(
 }
 .quick-action:disabled { opacity: 0.5; cursor: not-allowed; }
 .quick-action.local { grid-column: 1 / -1; padding: 14px 18px; }
-.quick-action.primary { background: var(--sh-ink); border-color: var(--sh-ink); color: #f5f7ef; }
-.quick-action.primary:hover { background: #354e43; }
+.quick-action.primary { background: var(--sh-ink); border-color: var(--sh-ink); color: var(--sh-on-ink); }
+.quick-action.primary:hover { background: var(--sh-ink-hover); }
 .qa-icon { font-size: 22px; flex-shrink: 0; }
 .qa-text { flex: 1; display: flex; flex-direction: column; gap: 7px; }
 .qa-text strong { font-size: 13px; font-weight: 500; }
 .qa-text small { font-size: 11px; color: var(--sh-text-muted); }
-.primary .qa-text small { color: #b9cabd; }
-.primary kbd { background: #3a5044; border-color: #526756; color: #d3ded2; white-space: nowrap; }
+.primary .qa-text small { color: var(--sh-on-ink-muted); }
+.primary kbd { background: var(--sh-kbd-on-ink); border-color: var(--sh-kbd-on-ink-border); color: var(--sh-kbd-on-ink-text); white-space: nowrap; }
 .qa-arrow { color: var(--sh-text-muted); }
 .wb-block-title {
   display: flex;
@@ -610,8 +642,9 @@ watch(
 .cc-name, .cc-addr { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cc-time { width: 72px; font-size: 11px; text-align: right; color: var(--sh-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .proto-tag { font: 10px var(--sh-font-mono); color: var(--sh-text-muted); }
-.connect-arrow { font-size: 13px; opacity: 0; color: var(--sh-accent); }
-.connection-row:hover .connect-arrow, .connection-row:focus-visible .connect-arrow { opacity: 1; }
+.connection-actions { display: flex; gap: 4px; }
+.connection-actions button { border: 0; border-radius: 6px; padding: 4px 8px; background: var(--sh-bg-panel); color: var(--sh-text-secondary); font-size: 11px; cursor: pointer; }
+.connection-actions button:hover { color: var(--sh-accent); }
 .wb-empty {
   display: flex;
   align-items: center;

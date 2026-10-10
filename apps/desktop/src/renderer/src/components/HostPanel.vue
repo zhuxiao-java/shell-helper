@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { nextTick, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { ElMessageBox } from 'element-plus'
 import { useHostStore } from '@renderer/stores/host'
@@ -28,12 +28,27 @@ function retryLoad(): void {
   hostStore.refresh().catch(() => undefined)
 }
 
-// 已折叠的分组名集合
+const COLLAPSE_KEY = 'shell-helper:collapsed-groups'
 const collapsed = ref<Set<string>>(new Set())
+function rememberGroups(): void {
+  try { localStorage.setItem(COLLAPSE_KEY, JSON.stringify([...collapsed.value])) } catch { /* 隐私模式写入失败不阻断 */ }
+}
 function toggleGroup(g: string): void {
   const next = new Set(collapsed.value)
   next.has(g) ? next.delete(g) : next.add(g)
   collapsed.value = next
+  rememberGroups()
+}
+function visibleHosts(): Host[] {
+  return grouped.value.flatMap((group) => collapsed.value.has(group.group) ? [] : group.items)
+}
+function moveSelection(delta: number): void {
+  const rows = visibleHosts()
+  if (!rows.length) return
+  const index = Math.max(0, rows.findIndex((item) => item.id === selectedId.value))
+  const next = rows[Math.min(rows.length - 1, Math.max(0, index + delta))]
+  selectedId.value = next.id
+  void nextTick(() => document.querySelector<HTMLElement>(`[data-host-id="${next.id}"]`)?.focus())
 }
 
 function hostIcon(protocol: Protocol): string {
@@ -72,6 +87,10 @@ async function onRowCommand(cmd: string, host: Host): Promise<void> {
 }
 
 onMounted(() => {
+  try {
+    const saved = JSON.parse(localStorage.getItem(COLLAPSE_KEY) || '[]') as unknown
+    if (Array.isArray(saved)) collapsed.value = new Set(saved.filter((item): item is string => typeof item === 'string'))
+  } catch { /* 忽略损坏的折叠记录 */ }
   hostStore.refresh().catch(() => undefined)
 })
 </script>
@@ -134,11 +153,14 @@ onMounted(() => {
             :class="{ selected: selectedId === h.id }"
             tabindex="0"
             role="group"
+            :data-host-id="h.id"
             :aria-label="h.name"
             :title="h.protocol === 'local' ? '此电脑 · 默认 Shell' : `${h.username}@${h.host}:${h.port}`"
             @click="onSelect(h)"
             @dblclick="emit('open-default', h.id)"
             @keydown.enter.self.prevent="emit('open-default', h.id)"
+            @keydown.up.self.prevent="moveSelection(-1)"
+            @keydown.down.self.prevent="moveSelection(1)"
             @keydown.space.self.prevent="onSelect(h)"
           >
           <div class="host-icon" :class="`proto-${h.protocol}`">
@@ -169,7 +191,7 @@ onMounted(() => {
         </div>
       </div>
     </el-scrollbar>
-    <div class="panel-footer"><el-icon><Pointer /></el-icon><span>双击连接，或选中后按 Enter</span></div>
+    <div class="panel-footer"><el-icon><Pointer /></el-icon><span>方向键移动，Enter 或双击连接</span></div>
   </div>
 </template>
 
@@ -313,12 +335,6 @@ onMounted(() => {
 .host-row:focus-within .host-actions,
 .host-row.selected .host-actions {
   opacity: 1;
-  pointer-events: auto;
-}
-.host-row:hover .proto-tag,
-.host-row:focus-within .proto-tag,
-.host-row.selected .proto-tag {
-  opacity: 0;
 }
 .host-icon {
   width: 24px;
@@ -361,17 +377,9 @@ onMounted(() => {
   transition: opacity 0.14s ease;
 }
 .host-actions {
-  position: absolute;
-  right: 8px;
-  top: 50%;
-  transform: translateY(-50%);
   display: flex;
+  flex-shrink: 0;
   gap: 2px;
-  border-radius: 6px;
-  background: var(--sh-bg-sidebar);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.14s ease;
 }
 .act {
   width: 26px;

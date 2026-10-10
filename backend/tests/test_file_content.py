@@ -157,6 +157,18 @@ class ProviderTests(unittest.TestCase):
             with self.assertRaises(ContentError):
                 validate_text(data)
 
+    def test_binary_transfer_skips_text_checks(self):
+        remote = FakeSftp()
+        remote.files["/image.bin"] = b"\x89PNG\r\n\x1a\n"
+        provider = SftpProvider(remote)
+        self.assertEqual(provider.read_bytes("/image.bin"), remote.files["/image.bin"])
+        provider.write_bytes("/new.bin", b"PK\x03\x04")
+        self.assertEqual(remote.files["/new.bin"], b"PK\x03\x04")
+        ftp = FtpProvider(FakeFtp())
+        self.assertTrue(ftp.read_bytes(self.path).startswith(b"original"))
+        ftp.write_bytes("/upload.bin", b"\x00\x01")
+        self.assertEqual(ftp._ftp.files["/upload.bin"], b"\x00\x01")
+
     def test_sftp_write_preserves_mode_and_bytes(self):
         remote = FakeSftp()
         provider = SftpProvider(remote)

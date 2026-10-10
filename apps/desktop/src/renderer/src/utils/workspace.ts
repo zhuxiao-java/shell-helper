@@ -1,4 +1,4 @@
-import { shallowReactive } from 'vue'
+import { reactive, shallowReactive } from 'vue'
 
 export interface TerminalBridge {
   sessionId: string
@@ -8,3 +8,7 @@ export interface TerminalBridge {
 export interface FileBridge { refresh(): void; openSelected(): void }
 export const terminalBridges = shallowReactive(new Map<string, TerminalBridge>())
 export const fileBridges = new Map<string, FileBridge>()
+export const sessionMeta = reactive({
+  terminal: {} as Record<string, { cols: number; rows: number }>,
+  path: {} as Record<string, string>
+})

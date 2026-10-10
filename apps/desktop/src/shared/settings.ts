@@ -7,11 +7,14 @@ export const ACTIONS = {
 export type ActionId = keyof typeof ACTIONS
 export interface Binding { shortcut: string; enabled: boolean }
 export interface TerminalCommand extends Binding { id: string; name: string; command: string }
+export type Appearance = 'system' | 'light' | 'dark'
 export interface Settings {
   version: 1
   bindings: Record<ActionId, Binding>
   commands: TerminalCommand[]
   editor: { mode: 'default' | 'custom'; path: string }
+  appearance: Appearance
+  terminal: { fontSize: number }
 }
 export interface SettingsResult { settings: Settings; warning?: string }
 export type StorageLocationId = 'drafts' | 'database' | 'settings' | 'logs'
@@ -23,7 +26,7 @@ export function defaults(): Settings {
   bindings.newConnection.shortcut = 'Mod+N'
   bindings.toggleSidebar.shortcut = 'Mod+B'
   bindings.openSettings.shortcut = 'Mod+,'
-  return { version: 1, bindings, commands: [], editor: { mode: 'default', path: '' } }
+  return { version: 1, bindings, commands: [], editor: { mode: 'default', path: '' }, appearance: 'light', terminal: { fontSize: 14 } }
 }
 
 export function validCommand(command: string): boolean {
@@ -70,6 +73,12 @@ export function validateSettings(value: unknown): Settings {
   if (!v.editor || !['default', 'custom'].includes(v.editor.mode) || typeof v.editor.path !== 'string' ||
       v.editor.path.length > 4096 || /[\x00-\x1f]/.test(v.editor.path) || (v.editor.mode === 'custom' && !v.editor.path)) throw new Error('请选择有效的文本编辑器')
   result.editor = { mode: v.editor.mode, path: v.editor.path }
+  const appearance = v.appearance ?? 'light'
+  if (appearance !== 'system' && appearance !== 'light' && appearance !== 'dark') throw new Error('外观设置无效')
+  const fontSize = v.terminal?.fontSize ?? 14
+  if (!Number.isInteger(fontSize) || fontSize < 12 || fontSize > 24) throw new Error('终端字号需在 12 到 24 之间')
+  result.appearance = appearance
+  result.terminal = { fontSize }
   return result
 }
 

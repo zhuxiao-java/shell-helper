@@ -108,6 +108,13 @@ test('内存数据库不伪造文件路径，非法后端路径不给予打开�
 test('设置校验、冲突、控制字符及平台按键归一化', () => {
   const settings = defaults()
   assert.deepEqual(validateSettings(settings), settings)
+  const legacy = defaults()
+  delete legacy.appearance
+  delete legacy.terminal
+  const upgraded = validateSettings(legacy)
+  assert.equal(upgraded.appearance, 'light')
+  assert.equal(upgraded.terminal.fontSize, 14)
+  assert.throws(() => validateSettings({ ...defaults(), terminal: { fontSize: 8 } }), /字号/)
   settings.commands.push({ id: 'test', name: '状态', command: 'git status', shortcut: 'Mod+N', enabled: false })
   assert.throws(() => validateSettings(settings), /重复/)
   for (const command of ['pwd\nls', 'pwd\r', '\x1b[31m', 'x\x00', 'x\u2028y']) assert.equal(validCommand(command), false)

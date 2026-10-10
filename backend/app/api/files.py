@@ -5,10 +5,12 @@
 from __future__ import annotations
 
 import asyncio
+import posixpath
 from ftplib import error_perm
-from fastapi import APIRouter, Depends, HTTPException, Query, Header, Request, Response
+from urllib.parse import quote
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Header, Request, Response, UploadFile
 from starlette.concurrency import run_in_threadpool
-from ..services.file_provider import ContentError, MAX_CONTENT_BYTES, TRANSFER_TIMEOUT, digest
+from ..services.file_provider import ContentError, MAX_CONTENT_BYTES, MAX_TRANSFER_BYTES, TRANSFER_TIMEOUT, digest
 
 from ..core.security import require_auth
 from ..schemas import FileEntry, FileListOut
@@ -91,6 +93,38 @@ def list_dir(session_id: str = Query(...), path: str = Query(".")):
     ]
     result.sort(key=lambda e: (not e.is_dir, e.name.lower()))
     return FileListOut(path=target, entries=result)
+
+
+def _download_name(path: str) -> str:
+    name = posixpath.basename(path)
+    if not name or name in {".", ".."}:
+        raise HTTPException(400, "无效的远程路径")
+    return name
+
+
+@router.get("/download")
+def download_file(session_id: str, path: str):
+    provider = _provider_or_404(session_id)
+    data = _content_operation(lambda: provider.read_bytes(path))
+    name = _download_name(path)
+    return Response(data, media_type="application/octet-stream", headers={
+        "Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}",
+        "Cache-Control": "no-store",
+    })
+
+
+@router.post("/upload")
+async def upload_file(session_id: str, directory: str = "/", file: UploadFile = File(...)):
+    name = posixpath.basename((file.filename or "").replace("\\", "/"))
+    if not name or name in {".", ".."} or any(ord(char) < 32 for char in name):
+        raise HTTPException(400, "无效的文件名")
+    data = await file.read()
+    if len(data) > MAX_TRANSFER_BYTES:
+        raise HTTPException(413, "文件超过 32 MiB 上限")
+    provider = _provider_or_404(session_id)
+    target = provider.join(directory or "/", name)
+    await run_in_threadpool(_content_operation, lambda: provider.write_bytes(target, data))
+    return {"path": target, "size": len(data)}
 
 
 @router.post("/mkdir", status_code=204)

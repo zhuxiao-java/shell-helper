@@ -2,6 +2,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 import type { FormInstance, FormRules } from 'element-plus'
 import { useHostStore } from '@renderer/stores/host'
+import * as hostApi from '@renderer/api/hosts'
 import type { Host, HostInput, Protocol, AuthType } from '@renderer/api/types'
 
 const visible = defineModel<boolean>({ required: true })
@@ -10,6 +11,8 @@ const hostStore = useHostStore()
 
 const formRef = ref<FormInstance>()
 const submitting = ref(false)
+const testing = ref(false)
+const testMessage = ref('')
 const showAdvanced = ref(false)
 // 服务端保存错误,就地展示在表单顶部
 const saveError = ref('')
@@ -29,9 +32,10 @@ function defaults(): HostInput {
     protocol,
     host: '',
     port: { ssh: 22, sftp: 22, ftp: 21, telnet: 23, local: 0 }[protocol],
-    username: local ? '' : 'root',
+    username: '',
     auth_type: local ? 'none' : 'password',
     key_path: '',
+    jump_host_ids: [],
     tags: '',
     remote_cwd: local ? '~' : '/',
     password: ''
@@ -50,6 +54,7 @@ function fillFromHost(h: Host): void {
     username: h.username,
     auth_type: h.auth_type,
     key_path: h.key_path,
+    jump_host_ids: [...(h.jump_host_ids ?? [])],
     tags: h.tags,
     remote_cwd: h.remote_cwd,
     password: '' // 不回显已存储密码
@@ -125,10 +130,10 @@ function onProtocolChange(p: Protocol): void {
     form.password = ''
     form.key_path = ''
     form.remote_cwd = '~'
-  } else if (!form.username) form.username = 'root'
-  // 切换协议时修正不兼容的认证方式
-  if (p !== 'ssh' && p !== 'sftp' && (form.auth_type === 'pubkey' || form.auth_type === 'agent')) {
-    form.auth_type = 'password'
+  }
+  if (p !== 'ssh' && p !== 'sftp') {
+    if (form.auth_type === 'pubkey' || form.auth_type === 'agent') form.auth_type = 'password'
+    form.jump_host_ids = []
   }
   // 文件类协议默认根目录
   if (p === 'sftp' || p === 'ftp') form.remote_cwd = '/'
@@ -143,8 +148,34 @@ watch(visible, (v) => {
   }
   showAdvanced.value = false
   saveError.value = ''
+  testMessage.value = ''
   formRef.value?.clearValidate()
 })
+
+const groups = computed(() => {
+  const names = new Set(hostStore.hosts.map((item) => item.group).filter(Boolean))
+  names.add('默认分组')
+  if (form.group) names.add(form.group)
+  return [...names]
+})
+const tagList = computed({
+  get: () => (form.tags || '').split(',').map((item) => item.trim()).filter(Boolean),
+  set: (value: string[]) => { form.tags = value.map((item) => item.trim()).filter(Boolean).join(',') }
+})
+const jumpCandidates = computed(() => hostStore.hosts.filter((item) => (item.protocol === 'ssh' || item.protocol === 'sftp') && item.id !== props.editHost?.id))
+
+async function testConnection(): Promise<void> {
+  if (testing.value) return
+  testing.value = true
+  testMessage.value = ''
+  saveError.value = ''
+  try {
+    const result = await hostApi.testHost({ ...form, id: props.editHost?.id })
+    testMessage.value = result.message
+  } catch (error) {
+    saveError.value = (error as Error).message || '连接失败'
+  } finally { testing.value = false }
+}
 
 async function submit(): Promise<void> {
   const inst = formRef.value
@@ -251,6 +282,8 @@ async function submit(): Promise<void> {
         <el-form-item v-if="form.auth_type === 'pubkey'" label="私钥路径" prop="key_path">
           <el-input v-model="form.key_path" placeholder="~/.ssh/id_ed25519" />
         </el-form-item>
+        <el-button native-type="button" :loading="testing" @click="testConnection">测试连接</el-button>
+        <p v-if="testMessage" class="hf-local-hint">{{ testMessage }}</p>
       </div>
 
       <button type="button" class="hf-adv-toggle" :aria-expanded="showAdvanced" @click="showAdvanced = !showAdvanced">
@@ -259,13 +292,20 @@ async function submit(): Promise<void> {
       </button>
       <div v-show="showAdvanced" class="hf-section hf-section--adv">
         <el-form-item label="分组">
-          <el-input v-model="form.group" placeholder="默认分组" />
+          <el-select v-model="form.group" filterable allow-create default-first-option placeholder="默认分组">
+            <el-option v-for="name in groups" :key="name" :label="name" :value="name" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="form.protocol === 'ssh' || form.protocol === 'sftp'" label="跳板机">
+          <el-select v-model="form.jump_host_ids" multiple filterable placeholder="从外到内选择已保存的 SSH / SFTP">
+            <el-option v-for="item in jumpCandidates" :key="item.id" :label="item.name" :value="item.id" />
+          </el-select>
         </el-form-item>
         <el-form-item :label="form.protocol === 'local' ? '本地初始目录' : '初始目录'">
           <el-input v-model="form.remote_cwd" :placeholder="form.protocol === 'local' ? '~（用户主目录）' : '/'" />
         </el-form-item>
         <el-form-item label="标签">
-          <el-input v-model="form.tags" placeholder="逗号分隔，如：生产,nginx" />
+          <el-select v-model="tagList" multiple filterable allow-create default-first-option placeholder="输入后回车，例如 生产" />
         </el-form-item>
       </div>
     </el-form>
