@@ -29,3 +29,30 @@ export async function deleteHost(id: string): Promise<void> {
   const http = await getHttp()
   await http.delete(`/api/hosts/${id}`)
 }
+
+export interface HostKeyChallenge {
+  code: 'unknown_host_key' | 'host_key_changed'
+  host: string
+  port: number
+  key_type: string
+  public_key: string
+  fingerprint: string
+  message: string
+}
+
+export async function acceptHostKey(challenge: HostKeyChallenge): Promise<void> {
+  const http = await getHttp()
+  await http.post('/api/hosts/known', challenge)
+}
+
+export async function exportHosts(): Promise<Host[]> {
+  const http = await getHttp()
+  const { data } = await http.get<Host[]>('/api/hosts/export')
+  return data
+}
+
+export async function importHosts(items: HostInput[]): Promise<Host[]> {
+  const http = await getHttp()
+  const { data } = await http.post<Host[]>('/api/hosts/import', items)
+  return data
+}

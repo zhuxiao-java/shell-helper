@@ -16,6 +16,12 @@ export async function openLocalSession(): Promise<Session> {
   return data
 }
 
+export async function localCwd(sessionId: string): Promise<string> {
+  const http = await getHttp()
+  const { data } = await http.get<{ path: string }>(`/api/sessions/${sessionId}/cwd`)
+  return data.path
+}
+
 export async function closeSession(sessionId: string): Promise<void> {
   const http = await getHttp()
   await http.delete(`/api/sessions/${sessionId}`)

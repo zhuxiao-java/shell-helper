@@ -58,6 +58,14 @@ class HostTestInput(HostInput):
     id: str | None = None
 
 
+class KnownHostInput(BaseModel):
+    host: str = Field(min_length=1, max_length=255)
+    port: int = Field(ge=1, le=65535)
+    key_type: str = Field(min_length=1, max_length=40)
+    public_key: str = Field(min_length=1, max_length=8192)
+    fingerprint: str = Field(min_length=1, max_length=200)
+
+
 class SessionInput(BaseModel):
     host_id: str
     type: Literal["terminal", "sftp", "ftp"] = "terminal"

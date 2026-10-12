@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { nextTick, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
-import { ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { useHostStore } from '@renderer/stores/host'
-import type { Host, Protocol } from '@renderer/api/types'
+import * as hostApi from '@renderer/api/hosts'
+import type { Host, HostInput, Protocol } from '@renderer/api/types'
 import { isTerminalProto, isFileProto } from '@renderer/api/types'
 
 const emit = defineEmits<{
@@ -67,10 +68,80 @@ const canFiles = (h: Host): boolean => isFileProto(h.protocol)
 const searchInput = ref<{ focus(): void }>()
 defineExpose({ focusSearch: () => searchInput.value?.focus() })
 
+function toInput(host: Host, group = host.group): HostInput {
+  return {
+    name: host.name, group, protocol: host.protocol, host: host.host, port: host.port,
+    username: host.username, auth_type: host.auth_type, key_path: host.key_path,
+    jump_host_ids: [...host.jump_host_ids], tags: host.tags, remote_cwd: host.remote_cwd, password: null
+  }
+}
+
+const importInput = ref<HTMLInputElement>()
+const dropGroup = ref('')
+
+function onDragStart(event: DragEvent, host: Host): void {
+  event.dataTransfer?.setData('text/plain', host.id)
+  if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'
+}
+
+async function onDropGroup(event: DragEvent, group: string): Promise<void> {
+  dropGroup.value = ''
+  const id = event.dataTransfer?.getData('text/plain') || ''
+  const host = hostStore.byId(id)
+  if (!host || host.group === group) return
+  try { await hostStore.update(id, toInput(host, group)) }
+  catch (error) { ElMessage.error((error as Error).message || '无法移动分组') }
+}
+
+async function duplicate(host: Host): Promise<void> {
+  try {
+    await hostStore.create({ ...toInput(host), name: `${host.name} 副本`.slice(0, 200) })
+    ElMessage.success('已复制连接，密码需要重新填写')
+  } catch (error) { ElMessage.error((error as Error).message || '复制失败') }
+}
+
+async function exportHosts(): Promise<void> {
+  try {
+    const data = await hostApi.exportHosts()
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+    const link = document.createElement('a')
+    link.href = URL.createObjectURL(blob)
+    link.download = 'shell-helper-hosts.json'
+    link.click()
+    URL.revokeObjectURL(link.href)
+  } catch (error) { ElMessage.error((error as Error).message || '导出失败') }
+}
+
+async function onImport(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  try {
+    const parsed = JSON.parse(await file.text()) as unknown
+    if (!Array.isArray(parsed) || !parsed.length) throw new Error('请选择导出的连接 JSON')
+    const items = parsed.map((item) => {
+      const host = item as Partial<Host>
+      if (!host.name || !host.protocol) throw new Error('连接缺少名称或协议')
+      return toInput({
+        id: '', name: host.name, group: host.group || '默认分组', protocol: host.protocol,
+        host: host.host || '', port: host.port || 22, username: host.username || '',
+        auth_type: host.auth_type || 'password', credential_id: null, key_path: host.key_path || '',
+        jump_host_ids: Array.isArray(host.jump_host_ids) ? host.jump_host_ids : [],
+        tags: host.tags || '', remote_cwd: host.remote_cwd || '~'
+      })
+    })
+    await hostApi.importHosts(items)
+    await hostStore.refresh()
+    ElMessage.success(`已导入 ${items.length} 条连接，密码需要重新填写`)
+  } catch (error) { ElMessage.error((error as Error).message || '导入失败') }
+}
+
 async function onRowCommand(cmd: string, host: Host): Promise<void> {
   if (cmd === 'terminal' && canTerminal(host)) emit('open-terminal', host.id)
   else if (cmd === 'files' && canFiles(host)) emit('open-files', host.id)
   else if (cmd === 'edit') emit('edit-host', host)
+  else if (cmd === 'duplicate') await duplicate(host)
   else if (cmd === 'del') {
     try {
       await ElMessageBox.confirm(`确认删除主机「${host.name}」？`, '删除确认', {
@@ -102,6 +173,11 @@ onMounted(() => {
       <el-tooltip content="新建连接">
         <button class="panel-add" aria-label="新建连接" @click="emit('new-host')"><el-icon><Plus /></el-icon></button>
       </el-tooltip>
+    </div>
+    <div class="panel-tools">
+      <button type="button" @click="exportHosts">导出</button>
+      <button type="button" @click="importInput?.click()">导入</button>
+      <input ref="importInput" class="upload-input" type="file" accept="application/json,.json" aria-label="导入连接" @change="onImport" />
     </div>
     <div class="panel-toolbar">
       <el-input
@@ -139,7 +215,7 @@ onMounted(() => {
       </div>
 
       <div v-for="g in grouped" v-else :key="g.group" class="group-block">
-        <button class="group-title" :aria-expanded="!collapsed.has(g.group)" @click="toggleGroup(g.group)">
+        <button class="group-title" :class="{ drop: dropGroup === g.group }" :aria-expanded="!collapsed.has(g.group)" @click="toggleGroup(g.group)" @dragover.prevent="dropGroup = g.group" @dragleave="dropGroup = ''" @drop.prevent="onDropGroup($event, g.group)">
           <el-icon class="caret" :class="{ collapsed: collapsed.has(g.group) }"><ArrowDown /></el-icon>
           <span class="g-name">{{ g.group }}</span>
           <span class="g-count">{{ g.items.length }}</span>
@@ -154,6 +230,7 @@ onMounted(() => {
             tabindex="0"
             role="group"
             :data-host-id="h.id"
+            draggable="true"
             :aria-label="h.name"
             :title="h.protocol === 'local' ? '此电脑 · 默认 Shell' : `${h.username}@${h.host}:${h.port}`"
             @click="onSelect(h)"
@@ -162,12 +239,14 @@ onMounted(() => {
             @keydown.up.self.prevent="moveSelection(-1)"
             @keydown.down.self.prevent="moveSelection(1)"
             @keydown.space.self.prevent="onSelect(h)"
+            @dragstart="onDragStart($event, h)"
           >
           <div class="host-icon" :class="`proto-${h.protocol}`">
             <el-icon><component :is="hostIcon(h.protocol)" /></el-icon>
           </div>
           <div class="host-body">
             <span class="host-name">{{ h.name }}</span>
+            <span v-if="h.tags" class="host-tags">{{ h.tags.split(',').map(tag => tag.trim()).filter(Boolean).slice(0, 3).join(' · ') }}</span>
             <span class="host-addr">{{ h.protocol === 'local' ? '此电脑 · 默认 Shell' : `${h.username}@${h.host}:${h.port}` }}</span>
           </div>
           <span class="proto-tag" :class="`proto-${h.protocol}`">{{ protoLabel(h) }}</span>
@@ -180,6 +259,7 @@ onMounted(() => {
                   <el-dropdown-item v-if="canTerminal(h)" command="terminal" :icon="'Cellphone'">打开终端</el-dropdown-item>
                   <el-dropdown-item v-if="canFiles(h)" command="files" :icon="'FolderOpened'">文件管理</el-dropdown-item>
                   <el-dropdown-item command="edit" :icon="'Edit'">编辑</el-dropdown-item>
+                  <el-dropdown-item command="duplicate" :icon="'CopyDocument'">复制连接</el-dropdown-item>
                   <el-dropdown-item command="del" divided :icon="'Delete'" class="is-danger">
                     删除
                   </el-dropdown-item>
@@ -228,11 +308,16 @@ onMounted(() => {
   display: flex;
   padding: 8px 14px 14px;
 }
+.panel-tools { display: flex; gap: 8px; padding: 0 16px 2px; }
+.panel-tools button { border: 0; background: transparent; color: var(--sh-text-secondary); font-size: 11px; cursor: pointer; padding: 0; }
+.panel-tools .upload-input { display: none; }
 .panel-toolbar :deep(.el-input__wrapper) {
-  background: rgba(255, 255, 255, 0.46) !important;
+  background: var(--sh-bg-panel) !important;
   box-shadow: none !important;
   font-size: 12px;
 }
+.group-title.drop { background: var(--sh-bg-active); }
+.host-tags { display: block; color: var(--sh-text-muted); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .panel-toolbar :deep(.el-input__wrapper.is-focus) { box-shadow: 0 0 0 1px var(--sh-accent-border) inset !important; }
 .panel-toolbar .el-input {
   flex: 1;

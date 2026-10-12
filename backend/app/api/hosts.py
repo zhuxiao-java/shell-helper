@@ -10,8 +10,8 @@ from ..core.db import get_db
 from ..core.security import require_auth
 from ..models import Host
 from ..repositories import host_repo
-from ..schemas import HostInput, HostOut, HostTestInput
-from ..services import ftp_service, ssh_service, telnet_service
+from ..schemas import HostInput, HostOut, HostTestInput, KnownHostInput
+from ..services import ftp_service, host_keys, ssh_service, telnet_service
 
 router = APIRouter(prefix="/api/hosts", tags=["hosts"], dependencies=[Depends(require_auth)])
 
@@ -90,8 +90,40 @@ def test_connection(data: HostTestInput, db: Session = Depends(get_db)):
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001
+        mapped = host_keys.as_http(exc)
+        if mapped:
+            raise mapped from exc
         raise HTTPException(502, f"连接失败: {exc}") from exc
     return {"ok": True, "message": "连接成功"}
+
+
+@router.post("/known")
+def trust_host_key(data: KnownHostInput):
+    try:
+        fingerprint = host_keys.describe_public_key(data.key_type, data.public_key)
+        if fingerprint != data.fingerprint:
+            raise HTTPException(400, "指纹与公钥不一致")
+        host_keys.remember(data.host.strip(), data.port, data.key_type, data.public_key)
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True, "fingerprint": fingerprint}
+
+
+@router.get("/export", response_model=list[HostOut])
+def export_hosts(db: Session = Depends(get_db)):
+    return [_to_out(host) for host in host_repo.list_hosts(db)]
+
+
+@router.post("/import", response_model=list[HostOut], status_code=201)
+def import_hosts(items: list[HostInput], db: Session = Depends(get_db)):
+    if not items or len(items) > 500:
+        raise HTTPException(400, "一次最多导入 500 条连接，且不能为空")
+    created = []
+    for item in items:
+        created.append(host_repo.create_host(db, item.model_copy(update={"password": None})))
+    return [_to_out(host) for host in created]
 
 
 @router.get("/{host_id}", response_model=HostOut)

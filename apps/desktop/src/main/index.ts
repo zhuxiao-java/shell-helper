@@ -5,6 +5,7 @@ import { SettingsService } from './settings'
 import { StorageService } from './storage'
 import { ExternalEditService } from './external-edit'
 import { launchEditor, validateEditor } from './editor'
+import { cancelTransfer, downloadTo, listLocalFiles, uploadFrom } from './transfer'
 import { validateSettings, type StorageLocationId } from '../shared/settings'
 import type { OpenFileRequest } from '../shared/external'
 
@@ -48,6 +49,35 @@ function registerServices(): void {
   ipcMain.handle('edits:reopen', (event, id: string, useDefault: boolean) => { trusted(event); return edits.reopen(id, useDefault === true) })
   ipcMain.handle('edits:upload', (event, id: string, hash: string) => { trusted(event); return edits.upload(id, hash) })
   ipcMain.handle('edits:detach', (event, sessionId: string) => { trusted(event); return edits.detach(sessionId) })
+  ipcMain.handle('dialog:save', async (event, name: string) => {
+    trusted(event)
+    const result = await dialog.showSaveDialog(mainWindow!, { defaultPath: typeof name === 'string' ? name : 'download' })
+    return result.canceled ? null : result.filePath
+  })
+  ipcMain.handle('dialog:directory', async event => {
+    trusted(event)
+    const result = await dialog.showOpenDialog(mainWindow!, { properties: ['openDirectory', 'createDirectory'] })
+    return result.canceled ? null : result.filePaths[0] ?? null
+  })
+  ipcMain.handle('files:list-local', (event, root: string) => { trusted(event); return listLocalFiles(root) })
+  ipcMain.handle('files:download', (event, input) => {
+    trusted(event)
+    const info = backendManager.backendInfo
+    if (!info || !mainWindow) throw new Error('后端尚未就绪')
+    return downloadTo(mainWindow, info, input)
+  })
+  ipcMain.handle('files:upload', (event, input) => {
+    trusted(event)
+    const info = backendManager.backendInfo
+    if (!info || !mainWindow) throw new Error('后端尚未就绪')
+    return uploadFrom(mainWindow, info, input)
+  })
+  ipcMain.handle('files:cancel', (event, id: string) => { trusted(event); cancelTransfer(id) })
+  ipcMain.handle('clipboard:write', (event, text: string) => {
+    trusted(event)
+    if (typeof text !== 'string' || text.length > 1_000_000) throw new Error('无法复制')
+    clipboard.writeText(text)
+  })
 }
 
 async function confirmExit(): Promise<void> {

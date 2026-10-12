@@ -16,6 +16,7 @@ from dataclasses import dataclass
 
 MAX_CONTENT_BYTES = 10 * 1024 * 1024
 MAX_TRANSFER_BYTES = 32 * 1024 * 1024
+MAX_STREAM_BYTES = 8 * 1024 * 1024 * 1024
 TRANSFER_TIMEOUT = 30
 
 
@@ -87,7 +88,7 @@ class FileProvider:
         self.closed = False
 
     def __init_subclass__(cls):
-        for name in ("list", "mkdir", "create_file", "file_exists","rename", "remove", "is_dir", "read_content", "write_content", "read_bytes", "write_bytes", "close"):
+        for name in ("list", "mkdir", "create_file", "file_exists", "regular_file_size", "rename", "remove", "is_dir", "read_content", "write_content", "read_bytes", "write_bytes", "close"):
             if name in cls.__dict__:
                 setattr(cls, name, serialized(cls.__dict__[name]))
 
@@ -235,6 +236,72 @@ class SftpProvider(FileProvider):
                 if time.monotonic() > deadline:
                     raise TimeoutError()
                 stream.write(data[offset:offset + 65536])
+
+    def regular_file_size(self, path: str) -> int:
+        attr = self._sftp.lstat(path)
+        mode = attr.st_mode or 0
+        if not statmod.S_ISREG(mode):
+            raise ContentError(400, "只能传输普通文件")
+        size = int(attr.st_size or 0)
+        if size > MAX_STREAM_BYTES:
+            raise ContentError(413, "文件超过 8 GiB 上限")
+        return size
+
+    def iter_bytes(self, path: str):
+        """分块读取。锁会保持到迭代结束，避免同一条 SFTP 连接并发读写。"""
+        def generate():
+            with self.lock:
+                if self.closed:
+                    raise ContentError(410, "文件会话已断开，请重新连接")
+                check_path(path)
+                self.regular_file_size(path)
+                with self._sftp.open(path, "rb") as stream:
+                    while True:
+                        block = stream.read(65536)
+                        if not block:
+                            break
+                        yield block
+        return generate()
+
+    def write_stream(self, path: str, chunks) -> int:
+        with self.lock:
+            if self.closed:
+                raise ContentError(410, "文件会话已断开，请重新连接")
+            check_path(path)
+            try:
+                mode = self._sftp.lstat(path).st_mode or 0
+            except OSError:
+                mode = 0
+            if mode and not statmod.S_ISREG(mode):
+                raise ContentError(400, "只能传输普通文件")
+            total = 0
+            completed = False
+            temp = posixpath.join(posixpath.dirname(path) or "/", f".shell-helper-{uuid.uuid4().hex}.tmp")
+            try:
+                with self._sftp.open(temp, "wx") as stream:
+                    for block in chunks:
+                        if not isinstance(block, (bytes, bytearray)):
+                            raise ContentError(400, "无效的上传数据")
+                        total += len(block)
+                        if total > MAX_STREAM_BYTES:
+                            raise ContentError(413, "文件超过 8 GiB 上限")
+                        stream.write(block)
+                    completed = True
+                try:
+                    self._sftp.posix_rename(temp, path)
+                except OSError:
+                    try:
+                        self._sftp.remove(path)
+                    except OSError:
+                        pass
+                    self._sftp.rename(temp, path)
+            finally:
+                if not completed:
+                    try:
+                        self._sftp.remove(temp)
+                    except OSError:
+                        pass
+            return total
 
     def close(self) -> None:
         self.closed = True

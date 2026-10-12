@@ -15,7 +15,8 @@ import { useSettingsStore } from '@renderer/stores/settings'
 import { useExternalStore } from '@renderer/stores/external'
 import SettingsDialog from '@renderer/components/SettingsDialog.vue'
 import ExternalEdits from '@renderer/components/ExternalEdits.vue'
-import { installShortcuts } from '@renderer/utils/shortcuts'
+import { hasDialog, installShortcuts } from '@renderer/utils/shortcuts'
+import CommandPalette from '@renderer/components/CommandPalette.vue'
 import { fileBridges, sessionMeta, terminalBridges } from '@renderer/utils/workspace'
 import { validCommand, type ActionId, type TerminalCommand } from '../../shared/settings'
 
@@ -30,6 +31,17 @@ const settings = useSettingsStore()
 const external = useExternalStore()
 const hostPanel = ref<InstanceType<typeof HostPanel>>()
 const confirmingCommand = ref(false)
+const paletteOpen = ref(false)
+interface SavedTab { hostId: string; kind: 'terminal' | 'files'; title: string }
+function readSavedTabs(): SavedTab[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem('shell-helper:open-tabs') || '[]') as unknown
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter((item): item is SavedTab => !!item && typeof item === 'object' && (item.kind === 'terminal' || item.kind === 'files') && typeof item.hostId === 'string' && typeof item.title === 'string')
+  } catch { return [] }
+}
+const savedTabs = readSavedTabs()
+let persistTabs = false
 const commandAvailable = computed(() => activeTab.value?.kind === 'terminal' && !!terminalBridges.get(sessionStore.activeId)?.ready())
 let disposeShortcuts: (() => void) | undefined
 let disposeEdits: (() => void) | undefined
@@ -197,7 +209,7 @@ onMounted(async () => {
   loadSidebarPrefs()
   disposeShortcuts = installShortcuts({
     settings: () => settings.value, mac: settings.mac,
-    blocked: () => !settings.ready || settings.recording || settings.visible || formVisible.value || external.visible || confirmingCommand.value,
+    blocked: () => !settings.ready || settings.recording || settings.visible || formVisible.value || external.visible || confirmingCommand.value || paletteOpen.value,
     action, command: requestCommand
   })
   await settings.load()
@@ -215,7 +227,36 @@ onMounted(async () => {
   } catch {
     /* noop */
   }
+  if (backendReady.value && savedTabs.length) {
+    try {
+      await ElMessageBox.confirm(`恢复上次打开的 ${savedTabs.length} 个标签？`, '恢复会话', { confirmButtonText: '恢复', cancelButtonText: '不恢复' })
+      for (const item of savedTabs) {
+        if (!item.hostId && item.kind === 'terminal') await sessionStore.openLocalTerminal()
+        else if (item.kind === 'files') await sessionStore.openFiles(item.hostId)
+        else if (item.hostId) await sessionStore.openTerminal(item.hostId)
+        const tab = sessionStore.tabs.at(-1)
+        if (tab && item.title) sessionStore.rename(tab.id, item.title)
+      }
+    } catch { /* 不恢复 */ }
+  }
+  persistTabs = true
 })
+
+function onPaletteKey(event: KeyboardEvent): void {
+  if (event.repeat || event.isComposing || event.altKey || event.shiftKey || event.key.toLowerCase() !== 'k' || !(event.metaKey || event.ctrlKey)) return
+  const target = event.target as HTMLElement | null
+  if (target?.closest?.('input, textarea, select, [contenteditable="true"]')) return
+  if (settings.recording || hasDialog() || paletteOpen.value || confirmingCommand.value) return
+  event.preventDefault()
+  paletteOpen.value = true
+}
+
+watch(() => sessionStore.tabs.map(tab => ({ hostId: tab.hostId, kind: tab.kind, title: tab.title })), (items) => {
+  if (!persistTabs) return
+  try { localStorage.setItem('shell-helper:open-tabs', JSON.stringify(items)) } catch { /* 隐私模式写入失败不阻断 */ }
+}, { deep: true })
+onMounted(() => window.addEventListener('keydown', onPaletteKey, true))
+onBeforeUnmount(() => window.removeEventListener('keydown', onPaletteKey, true))
 
 onBeforeUnmount(() => { themeQuery.removeEventListener('change', applyAppearance); disposeShortcuts?.(); disposeEdits?.() })
 watch(() => settings.value.appearance, applyAppearance)
@@ -386,6 +427,7 @@ watch(
       </main>
     </div>
 
+    <CommandPalette v-model="paletteOpen" @connect="sessionStore.openDefault" @command="requestCommand" />
     <ExternalEdits :blocked="formVisible || settings.visible || confirmingCommand" />
 
     <!-- 底部状态栏 -->

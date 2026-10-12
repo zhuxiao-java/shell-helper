@@ -39,6 +39,24 @@ def shell_command() -> list[str]:
     raise ValueError("没有可用的本地 Shell")
 
 
+def current_directory(channel) -> str:
+    """读取本地 Shell 进程的当前目录。cd 是内建命令，进程号不变。"""
+    pid = getattr(getattr(channel, "process", None), "pid", None)
+    if not isinstance(pid, int) or pid <= 0:
+        raise ValueError("无法读取本地终端目录")
+    if sys.platform.startswith("linux"):
+        return os.readlink(f"/proc/{pid}/cwd")
+    if sys.platform == "darwin":
+        output = subprocess.check_output(
+            ["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"], text=True, timeout=3
+        )
+        paths = [line[1:] for line in output.splitlines() if line.startswith("n") and len(line) > 1]
+        if not paths:
+            raise ValueError("无法读取本地终端目录")
+        return paths[-1]
+    raise ValueError("当前系统不能读取本地终端目录")
+
+
 def working_directory(value: str = "~") -> str:
     if not value or value == "~":
         directory = Path.home()

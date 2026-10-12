@@ -8,13 +8,20 @@ export type ActionId = keyof typeof ACTIONS
 export interface Binding { shortcut: string; enabled: boolean }
 export interface TerminalCommand extends Binding { id: string; name: string; command: string }
 export type Appearance = 'system' | 'light' | 'dark'
+export const FONT_FAMILIES = [
+  "Menlo, Monaco, 'Courier New', monospace",
+  "'JetBrains Mono', Menlo, monospace",
+  'monospace'
+] as const
+export const TERMINAL_THEMES = ['dark', 'light', 'solarized', 'dracula', 'monokai'] as const
+export type TerminalTheme = (typeof TERMINAL_THEMES)[number]
 export interface Settings {
   version: 1
   bindings: Record<ActionId, Binding>
   commands: TerminalCommand[]
   editor: { mode: 'default' | 'custom'; path: string }
   appearance: Appearance
-  terminal: { fontSize: number }
+  terminal: { fontSize: number; fontFamily: string; copyOnSelect: boolean; theme: TerminalTheme }
 }
 export interface SettingsResult { settings: Settings; warning?: string }
 export type StorageLocationId = 'drafts' | 'database' | 'settings' | 'logs'
@@ -26,7 +33,10 @@ export function defaults(): Settings {
   bindings.newConnection.shortcut = 'Mod+N'
   bindings.toggleSidebar.shortcut = 'Mod+B'
   bindings.openSettings.shortcut = 'Mod+,'
-  return { version: 1, bindings, commands: [], editor: { mode: 'default', path: '' }, appearance: 'light', terminal: { fontSize: 14 } }
+  return {
+    version: 1, bindings, commands: [], editor: { mode: 'default', path: '' }, appearance: 'light',
+    terminal: { fontSize: 14, fontFamily: FONT_FAMILIES[0], copyOnSelect: false, theme: 'dark' }
+  }
 }
 
 export function validCommand(command: string): boolean {
@@ -77,8 +87,14 @@ export function validateSettings(value: unknown): Settings {
   if (appearance !== 'system' && appearance !== 'light' && appearance !== 'dark') throw new Error('外观设置无效')
   const fontSize = v.terminal?.fontSize ?? 14
   if (!Number.isInteger(fontSize) || fontSize < 12 || fontSize > 24) throw new Error('终端字号需在 12 到 24 之间')
+  const requestedFamily = v.terminal?.fontFamily
+  const fontFamily = FONT_FAMILIES.includes(requestedFamily as (typeof FONT_FAMILIES)[number]) ? requestedFamily! : FONT_FAMILIES[0]
+  const copyOnSelect = v.terminal?.copyOnSelect ?? false
+  if (typeof copyOnSelect !== 'boolean') throw new Error('复制即选中设置无效')
+  const theme = v.terminal?.theme ?? 'dark'
+  if (!TERMINAL_THEMES.includes(theme)) throw new Error('终端配色无效')
   result.appearance = appearance
-  result.terminal = { fontSize }
+  result.terminal = { fontSize, fontFamily, copyOnSelect, theme }
   return result
 }
 

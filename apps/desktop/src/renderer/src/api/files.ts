@@ -40,9 +40,10 @@ export async function download(sessionId: string, path: string): Promise<Blob> {
   return data
 }
 
-export async function upload(sessionId: string, directory: string, file: File): Promise<void> {
+export async function listTree(sessionId: string, path: string): Promise<{ path: string; relative: string; size: number }[]> {
   const http = await getHttp()
-  const body = new FormData()
-  body.append('file', file)
-  await http.post('/api/files/upload', body, { params: { session_id: sessionId, directory } })
+  const { data } = await http.get<{ files: { path: string; relative: string; size: number }[] }>('/api/files/tree', {
+    params: { session_id: sessionId, path }
+  })
+  return data.files
 }

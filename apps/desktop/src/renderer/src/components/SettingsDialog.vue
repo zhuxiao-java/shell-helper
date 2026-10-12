@@ -79,6 +79,28 @@ function addCommand(): void {
           <span>终端字号</span>
           <el-input-number v-model="draft.terminal.fontSize" :min="12" :max="24" />
         </div>
+        <div class="font-size">
+          <span>终端字体</span>
+          <el-select v-model="draft.terminal.fontFamily" style="width: 280px">
+            <el-option label="系统等宽" value="Menlo, Monaco, 'Courier New', monospace" />
+            <el-option label="JetBrains Mono" value="'JetBrains Mono', Menlo, monospace" />
+            <el-option label="通用等宽" value="monospace" />
+          </el-select>
+        </div>
+        <div class="font-size">
+          <span>终端配色</span>
+          <el-select v-model="draft.terminal.theme" style="width: 280px">
+            <el-option label="深色" value="dark" />
+            <el-option label="浅色" value="light" />
+            <el-option label="Solarized" value="solarized" />
+            <el-option label="Dracula" value="dracula" />
+            <el-option label="Monokai" value="monokai" />
+          </el-select>
+        </div>
+        <div class="font-size">
+          <span>选中即复制</span>
+          <el-switch v-model="draft.terminal.copyOnSelect" aria-label="选中即复制" />
+        </div>
       </el-tab-pane>
       <el-tab-pane label="快捷键" name="shortcuts">
         <p class="setting-note">快捷键仅在应用内生效。输入框、弹窗和输入法优先；终端保留 Ctrl 控制键，请使用带 Shift/Alt 的组合。</p>
