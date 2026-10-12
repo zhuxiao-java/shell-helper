@@ -17,6 +17,7 @@ export class StorageService {
   constructor(private readonly deps: StorageDependencies) {}
 
   async read(): Promise<StorageLocations> {
+    const root = this.deps.userData
     const locations: StorageLocation[] = [
       { id: 'drafts', path: path.join(this.deps.userData, 'drafts') },
       { id: 'database', path: null, unavailable: '暂时无法获取数据库位置' },
@@ -29,9 +30,9 @@ export class StorageService {
       else if (info.databasePath === null) locations[1].unavailable = '当前数据库不使用本地文件'
       if (validPath(info.dataDir)) locations[3].path = path.join(info.dataDir, 'logs')
       const incomplete = (info.databasePath !== null && !locations[1].path) || !locations[3].path
-      return { locations, warning: incomplete ? '后端未提供完整存储位置，请重启应用后重试。' : undefined }
+      return { locations, root, warning: incomplete ? '后端未提供完整存储位置，请重启应用后重试。' : undefined }
     } catch {
-      return { locations, warning: '后端暂不可用，仍可查看本地草稿和设置；数据库与日志位置可稍后重试。' }
+      return { locations, root, warning: '后端暂不可用，仍可查看本地草稿和设置；数据库与日志位置可稍后重试。' }
     }
   }
 
