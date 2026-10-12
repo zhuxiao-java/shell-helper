@@ -6,11 +6,14 @@ from __future__ import annotations
 
 import asyncio
 import posixpath
+import queue
+import threading
 from ftplib import error_perm
 from urllib.parse import quote
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Header, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Query, Header, Request, Response
+from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
-from ..services.file_provider import ContentError, MAX_CONTENT_BYTES, MAX_TRANSFER_BYTES, TRANSFER_TIMEOUT, digest
+from ..services.file_provider import ContentError, MAX_CONTENT_BYTES, MAX_STREAM_BYTES, TRANSFER_TIMEOUT, digest
 
 from ..core.security import require_auth
 from ..schemas import FileEntry, FileListOut
@@ -105,26 +108,107 @@ def _download_name(path: str) -> str:
 @router.get("/download")
 def download_file(session_id: str, path: str):
     provider = _provider_or_404(session_id)
-    data = _content_operation(lambda: provider.read_bytes(path))
+    size = _content_operation(lambda: provider.regular_file_size(path))
     name = _download_name(path)
-    return Response(data, media_type="application/octet-stream", headers={
+
+    def generate():
+        yield from provider.iter_bytes(path)
+
+    return StreamingResponse(generate(), media_type="application/octet-stream", headers={
+        "Content-Length": str(size),
         "Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}",
         "Cache-Control": "no-store",
     })
 
 
-@router.post("/upload")
-async def upload_file(session_id: str, directory: str = "/", file: UploadFile = File(...)):
-    name = posixpath.basename((file.filename or "").replace("\\", "/"))
-    if not name or name in {".", ".."} or any(ord(char) < 32 for char in name):
-        raise HTTPException(400, "无效的文件名")
-    data = await file.read()
-    if len(data) > MAX_TRANSFER_BYTES:
-        raise HTTPException(413, "文件超过 32 MiB 上限")
+@router.get("/tree")
+def list_tree(session_id: str, path: str = "/", limit: int = 2000):
+    """递归列出目录中的普通文件，供整目录下载。上限 2000 个文件。"""
     provider = _provider_or_404(session_id)
-    target = provider.join(directory or "/", name)
-    await run_in_threadpool(_content_operation, lambda: provider.write_bytes(target, data))
-    return {"path": target, "size": len(data)}
+    if limit < 1 or limit > 2000:
+        raise HTTPException(400, "目录列举上限无效")
+    found: list[dict] = []
+    stack = [(path or "/", "")]
+    while stack:
+        directory, prefix = stack.pop()
+        try:
+            entries = _content_operation(lambda directory=directory: provider.list(directory))
+        except HTTPException:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(400, f"无法列出目录: {exc}") from exc
+        for entry in entries:
+            if entry.name in {".", ".."} or "/" in entry.name or "\\" in entry.name:
+                continue
+            relative = f"{prefix}{entry.name}"
+            if entry.is_dir:
+                stack.append((entry.path, relative + "/"))
+            else:
+                found.append({"path": entry.path, "relative": relative, "size": entry.size})
+                if len(found) > limit:
+                    raise HTTPException(413, "目录中的文件超过 2000 个")
+    return {"files": found}
+
+
+_CANCEL = object()
+
+
+@router.post("/upload")
+async def upload_file(request: Request, session_id: str, directory: str = "/", name: str = "", overwrite: bool = False):
+    filename = posixpath.basename((name or "").replace("\\", "/"))
+    if not filename or filename in {".", ".."} or any(ord(char) < 32 for char in filename):
+        raise HTTPException(400, "无效的文件名")
+    provider = _provider_or_404(session_id)
+    target = provider.join(directory or "/", filename)
+    exists = await run_in_threadpool(_content_operation, lambda: provider.file_exists(target))
+    if exists:
+        is_directory = await run_in_threadpool(_content_operation, lambda: provider.is_dir(target))
+        if is_directory:
+            raise HTTPException(400, "只能传输普通文件")
+        if not overwrite:
+            raise HTTPException(409, "远程已有同名文件")
+    blocks: queue.Queue = queue.Queue(maxsize=4)
+    errors: list[BaseException] = []
+
+    def consume() -> None:
+        def chunks():
+            while True:
+                item = blocks.get()
+                if item is None:
+                    return
+                if item is _CANCEL:
+                    raise ContentError(499, "已取消")
+                yield item
+        try:
+            provider.write_stream(target, chunks())
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    worker = threading.Thread(target=consume, daemon=True)
+    worker.start()
+    total = 0
+    cancelled = False
+    try:
+        async for block in request.stream():
+            if await request.is_disconnected():
+                cancelled = True
+                break
+            total += len(block)
+            if total > MAX_STREAM_BYTES:
+                cancelled = True
+                raise HTTPException(413, "文件超过 8 GiB 上限")
+            await asyncio.to_thread(blocks.put, block)
+    finally:
+        await asyncio.to_thread(blocks.put, _CANCEL if cancelled else None)
+        await asyncio.to_thread(worker.join)
+    if errors:
+        err = errors[0]
+        if isinstance(err, ContentError):
+            raise HTTPException(err.status, str(err)) from err
+        if isinstance(err, HTTPException):
+            raise err
+        raise HTTPException(502, f"文件传输失败: {err}") from err
+    return {"path": target, "size": total}
 
 
 @router.post("/mkdir", status_code=204)

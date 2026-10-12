@@ -64,6 +64,13 @@ export async function getHttp(): Promise<AxiosInstance> {
       (err) => {
         const detail = (err.response?.data as { detail?: unknown } | undefined)?.detail
         if (typeof detail === 'string' && detail) err.message = detail
+        else if (detail && typeof detail === 'object' && 'code' in detail && 'fingerprint' in detail) {
+          const challenge = detail as { code?: string; message?: string }
+          if (challenge.code === 'unknown_host_key' || challenge.code === 'host_key_changed') {
+            ;(err as { hostKey?: unknown }).hostKey = detail
+            err.message = challenge.message || '需要确认主机密钥'
+          }
+        }
         return Promise.reject(err)
       }
     )

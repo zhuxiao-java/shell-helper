@@ -61,7 +61,7 @@ class FakeSftp:
         if not self.rename_supported:
             raise OSError("不支持扩展")
         self.files[new] = self.files.pop(old)
-        self.modes[new] = self.modes.pop(old)
+        self.modes[new] = self.modes.pop(old, stat.S_IFREG | 0o644)
 
     def remove(self, path):
         self.deleted.append(path)
@@ -168,6 +168,15 @@ class ProviderTests(unittest.TestCase):
         self.assertTrue(ftp.read_bytes(self.path).startswith(b"original"))
         ftp.write_bytes("/upload.bin", b"\x00\x01")
         self.assertEqual(ftp._ftp.files["/upload.bin"], b"\x00\x01")
+
+    def test_stream_upload_replaces_via_temp_file(self):
+        remote = FakeSftp()
+        provider = SftpProvider(remote)
+        size = provider.write_stream("/image.bin", iter([b"\x89PNG", b"rest"]))
+        self.assertEqual(size, 8)
+        self.assertEqual(remote.files["/image.bin"], b"\x89PNGrest")
+        self.assertFalse(any(name.endswith(".tmp") for name in remote.files))
+        self.assertEqual(b"".join(provider.iter_bytes("/image.bin")), b"\x89PNGrest")
 
     def test_sftp_write_preserves_mode_and_bytes(self):
         remote = FakeSftp()

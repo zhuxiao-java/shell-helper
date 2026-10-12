@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from ..core.security import require_auth
 from ..schemas import SessionInput, SessionOut
+from ..services import host_keys, local_pty_service
 from ..services.session_manager import get_session_manager
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"], dependencies=[Depends(require_auth)])
@@ -22,6 +23,9 @@ def create_session(data: SessionInput):
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
     except Exception as e:  # noqa: BLE001 - 连接失败统一转 502
+        mapped = host_keys.as_http(e)
+        if mapped:
+            raise mapped from e
         raise HTTPException(502, f"连接失败: {e}") from e
     return SessionOut(
         session_id=session.session_id,
@@ -56,6 +60,20 @@ def get_session(session_id: str):
         raise HTTPException(410, "会话已断开")
     return SessionOut(session_id=session.session_id, host_id=session.host_id, type=session.type,
                       status="active", remote_cwd=session.remote_cwd)
+
+
+@router.get("/{session_id}/cwd")
+def session_cwd(session_id: str):
+    session = get_session_manager().get(session_id)
+    if session is None or session.closed:
+        raise HTTPException(410, "会话已断开")
+    if session.transport != "local":
+        raise HTTPException(400, "只有本地终端可以读取进程目录")
+    try:
+        path = local_pty_service.current_directory(session.channel)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, "无法读取本地终端目录") from exc
+    return {"path": path}
 
 
 @router.delete("/{session_id}", status_code=204)

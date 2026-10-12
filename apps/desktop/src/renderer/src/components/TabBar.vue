@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { ElMessageBox } from 'element-plus'
 import { useSessionStore } from '@renderer/stores/session'
 import { useHostStore } from '@renderer/stores/host'
 import type { Protocol } from '@renderer/api/types'
@@ -35,6 +36,13 @@ function onNavigate(event: KeyboardEvent, id: string): void {
   event.preventDefault()
   sessionStore.focus(ids[index])
   scrollRef.value?.querySelectorAll<HTMLElement>('[role="tab"]')[index]?.focus()
+}
+
+async function renameTab(id: string, title: string): Promise<void> {
+  try {
+    const { value } = await ElMessageBox.prompt('标签名称', '重命名标签', { inputValue: title, inputPattern: /\S+/ })
+    sessionStore.rename(id, value)
+  } catch { /* 取消重命名 */ }
 }
 
 function tabProto(tabId: string): Protocol {
@@ -107,7 +115,7 @@ onBeforeUnmount(() => {
           <el-icon v-if="tab.kind === 'files'"><FolderOpened /></el-icon>
           <el-icon v-else><Monitor /></el-icon>
         </span>
-        <span class="tab-title">{{ tab.title }}</span>
+        <span class="tab-title" @dblclick.stop="renameTab(tab.id, tab.title)">{{ tab.title }}</span>
         <!-- 连接状态(与协议图标分离) -->
         <i
           class="status-dot"

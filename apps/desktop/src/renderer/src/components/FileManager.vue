@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox, type TreeInstance } from 'element-plus'
 import * as fileApi from '@renderer/api/files'
 import type { FileEntry } from '@renderer/api/types'
@@ -8,7 +8,8 @@ import { useSessionStore } from '@renderer/stores/session'
 import { useHostStore } from '@renderer/stores/host'
 import { useExternalStore } from '@renderer/stores/external'
 import { useSettingsStore } from '@renderer/stores/settings'
-import { fileBridges, sessionMeta } from '@renderer/utils/workspace'
+import { fileBridges, sessionMeta, terminalBridges } from '@renderer/utils/workspace'
+import { isTerminalProto } from '@renderer/api/types'
 import { EDIT_STATUS, MAX_FILE_BYTES } from '../../../shared/external'
 
 const props = defineProps<{ tab: Tab; visible: boolean }>()
@@ -27,7 +28,7 @@ fileBridges.set(props.tab.id, {
     else ElMessage.info('请先选择普通文本文件')
   }
 })
-onBeforeUnmount(() => { fileBridges.delete(props.tab.id); delete sessionMeta.path[props.tab.id]; requestId++ })
+onBeforeUnmount(() => { fileBridges.delete(props.tab.id); delete sessionMeta.path[props.tab.id]; stopProgress?.(); requestId++ })
 
 const cwd = ref('/')
 const entries = ref<FileEntry[]>([])
@@ -40,8 +41,13 @@ const query = ref('')
 const sortKey = ref<'name' | 'mtime' | 'size'>('name')
 const sortDir = ref<1 | -1>(1)
 const uploadInput = ref<HTMLInputElement>()
+const directoryInput = ref<HTMLInputElement>()
 const transferring = ref(false)
-const MAX_TRANSFER = 32 * 1024 * 1024
+const dragActive = ref(false)
+const followTerminal = ref(false)
+const picked = ref<string[]>([])
+const transfer = ref<{ id: string; label: string; loaded: number; total: number } | null>(null)
+let stopProgress: (() => void) | undefined
 const showTree = ref(true)
 const tree = ref<TreeInstance>()
 const treeVersion = ref(0)
@@ -63,6 +69,14 @@ const visibleEntries = computed(() => entries.value.filter(e => e.name.toLocaleL
   return a.name.localeCompare(b.name, undefined, { numeric: true }) * sortDir.value
 }))
 const linkState = computed(() => props.tab.connecting ? 'pending' : (!props.tab.session || props.tab.session.status === 'closed' || props.tab.error ? 'off' : 'ok'))
+const linkedTerminal = computed(() => sessionStore.tabs.find(tab => tab.kind === 'terminal' && tab.hostId === props.tab.hostId))
+const shellPath = computed(() => linkedTerminal.value ? sessionMeta.shellPath[linkedTerminal.value.id] || '' : '')
+const transferLabel = computed(() => {
+  const job = transfer.value
+  if (!job) return ''
+  if (!job.total) return `${job.label} ${fmtSize(job.loaded)}`
+  return `${job.label} ${Math.min(100, Math.round(job.loaded / job.total * 100))}%`
+})
 function toggleSort(key: 'name' | 'mtime' | 'size'): void {
   if (sortKey.value === key) sortDir.value = sortDir.value === 1 ? -1 : 1
   else { sortKey.value = key; sortDir.value = 1 }
@@ -202,6 +216,7 @@ function onFileKey(event: KeyboardEvent, entry: FileEntry): void {
     const next = visibleEntries.value[index + (event.key === 'ArrowDown' ? 1 : -1)]
     if (!next) return
     selected.value = next
+    picked.value = [next.path]
     const sibling = event.key === 'ArrowDown' ? (event.currentTarget as HTMLElement).nextElementSibling : (event.currentTarget as HTMLElement).previousElementSibling
     ;(sibling as HTMLElement | null)?.focus()
   }
@@ -279,43 +294,154 @@ async function onRowCommand(cmd: string, row: FileEntry): Promise<void> {
   }
 }
 
-async function onUpload(event: Event): Promise<void> {
-  const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
-  input.value = ''
-  const sid = props.tab.session?.session_id
-  if (!file || !sid) return
-  if (file.size > MAX_TRANSFER) { ElMessage.warning('文件超过 32 MiB'); return }
-  transferring.value = true
-  try {
-    await fileApi.upload(sid, cwd.value, file)
-    ElMessage.success('已上传')
-    await refresh()
-  } catch (error) {
-    ElMessage.error((error as Error).message || '上传失败')
-  } finally { transferring.value = false }
+function localPathOf(file: File): string {
+  return (file as File & { path?: string }).path || ''
 }
 
-async function onDownload(entry: FileEntry): Promise<void> {
-  const sid = props.tab.session?.session_id
-  if (!sid || entry.is_dir) return
-  if (entry.size > MAX_TRANSFER) { ElMessage.warning('文件超过 32 MiB'); return }
+function chooseRow(event: MouseEvent, row: FileEntry, index: number): void {
+  if (event.shiftKey) {
+    const anchor = visibleEntries.value.findIndex(item => item.path === (picked.value[0] || selected.value?.path))
+    const start = Math.min(anchor < 0 ? index : anchor, index)
+    const end = Math.max(anchor < 0 ? index : anchor, index)
+    picked.value = visibleEntries.value.slice(start, end + 1).map(item => item.path)
+  } else if (event.metaKey || event.ctrlKey) {
+    picked.value = picked.value.includes(row.path) ? picked.value.filter(item => item !== row.path) : [...picked.value, row.path]
+  } else picked.value = [row.path]
+  selected.value = row
+}
+
+async function runTransfer(label: string, work: (id: string) => Promise<void>): Promise<void> {
+  const id = crypto.randomUUID()
+  transfer.value = { id, label, loaded: 0, total: 0 }
   transferring.value = true
+  try { await work(id) }
+  finally {
+    if (transfer.value?.id === id) transfer.value = null
+    transferring.value = false
+  }
+}
+
+async function uploadOne(id: string, directory: string, localPath: string, name: string, overwrite: boolean): Promise<void> {
+  const sid = props.tab.session?.session_id
+  if (!sid) return
+  if (transfer.value) transfer.value.label = name
   try {
-    const blob = await fileApi.download(sid, entry.path)
-    if (blob.type.includes('json')) {
-      const detail = JSON.parse(await blob.text()) as { detail?: string }
-      throw new Error(detail.detail || '下载失败')
-    }
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = entry.name
-    link.click()
-    URL.revokeObjectURL(url)
+    await window.shellHelper.uploadFrom({ id, sessionId: sid, directory, localPath, name, overwrite })
   } catch (error) {
-    ElMessage.error((error as Error).message || '下载失败')
-  } finally { transferring.value = false }
+    if (!overwrite && (error as Error).message.includes('远程已有同名文件')) {
+      await ElMessageBox.confirm(`「${name}」在远程已存在，是否覆盖？`, '覆盖确认', { type: 'warning', confirmButtonText: '覆盖', cancelButtonText: '跳过' })
+      await window.shellHelper.uploadFrom({ id, sessionId: sid, directory, localPath, name, overwrite: true })
+      return
+    }
+    throw error
+  }
+}
+
+async function uploadLocal(files: { localPath: string; directory: string; name: string }[]): Promise<void> {
+  if (!files.length) return
+  const sid = props.tab.session?.session_id
+  if (!sid) return
+  await runTransfer(files[0].name, async (id) => {
+    const made = new Set<string>()
+    for (const file of files) {
+      const parts = file.directory.split('/').filter(Boolean)
+      let current = ''
+      for (const part of parts) {
+        current += `/${part}`
+        if (made.has(current)) continue
+        await fileApi.mkdir(sid, current).catch(() => undefined)
+        made.add(current)
+      }
+      try { await uploadOne(id, file.directory, file.localPath, file.name, false) }
+      catch (error) {
+        if (error === 'cancel' || error === 'close') continue
+        throw error
+      }
+    }
+  })
+  ElMessage.success(files.length > 1 ? `已上传 ${files.length} 个文件` : '已上传')
+  await refresh()
+}
+
+async function onUpload(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement
+  const files = [...input.files ?? []]
+  input.value = ''
+  const batch = files.flatMap(file => {
+    const localPath = localPathOf(file)
+    if (!localPath) return []
+    const relative = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name
+    const parts = relative.split('/').filter(Boolean)
+    const name = parts.pop() || file.name
+    const directory = parts.length ? `${cwd.value === '/' ? '' : cwd.value}/${parts.join('/')}` : cwd.value
+    return [{ localPath, directory: directory || '/', name }]
+  })
+  if (files.length && !batch.length) { ElMessage.warning('无法读取本地文件路径'); return }
+  try { await uploadLocal(batch) }
+  catch (error) {
+    const message = (error as Error).message || ''
+    if (error !== 'cancel' && error !== 'close' && message !== '已取消') ElMessage.error(message || '上传失败')
+  }
+}
+
+async function onDropFiles(event: DragEvent): Promise<void> {
+  dragActive.value = false
+  const files = [...event.dataTransfer?.files ?? []]
+  if (!files.length || linkState.value !== 'ok') return
+  await onUpload({ target: { files, value: '' } } as unknown as Event)
+}
+
+async function saveEntry(entry: { path: string; relative?: string; name?: string }, directory?: string): Promise<void> {
+  const sid = props.tab.session?.session_id
+  if (!sid) return
+  const name = entry.name || entry.relative?.split('/').pop() || 'download'
+  const dest = directory
+    ? `${directory.replace(/\/$/, '')}/${entry.relative || name}`
+    : await window.shellHelper.chooseSavePath(name)
+  if (!dest) return
+  await runTransfer(name, (id) => window.shellHelper.downloadTo({ id, sessionId: sid, remotePath: entry.path, destPath: dest }))
+}
+
+async function onDownload(entry?: FileEntry): Promise<void> {
+  const sid = props.tab.session?.session_id
+  if (!sid) return
+  const targets = entry ? [entry] : visibleEntries.value.filter(item => picked.value.includes(item.path))
+  const rows = targets.length ? targets : (selected.value ? [selected.value] : [])
+  if (!rows.length) { ElMessage.info('请先选择要下载的文件'); return }
+  try {
+    if (rows.length === 1 && !rows[0].is_dir) {
+      await saveEntry({ path: rows[0].path, name: rows[0].name })
+      return
+    }
+    const directory = await window.shellHelper.chooseDirectory()
+    if (!directory) return
+    for (const row of rows) {
+      const files = row.is_dir
+        ? await fileApi.listTree(sid, row.path)
+        : [{ path: row.path, relative: row.name, size: row.size }]
+      for (const file of files) await saveEntry(file, directory)
+    }
+    ElMessage.success('下载完成')
+  } catch (error) {
+    if ((error as Error).message !== '已取消') ElMessage.error((error as Error).message || '下载失败')
+  }
+}
+
+function cancelTransfer(): void {
+  if (transfer.value) void window.shellHelper.cancelTransfer(transfer.value.id)
+}
+
+async function openTerminalHere(): Promise<void> {
+  const current = host.value
+  if (!current || !isTerminalProto(current.protocol)) { ElMessage.info('这个连接没有终端'); return }
+  const quoted = `'${cwd.value.replace(/'/g, `'\\''`)}'`
+  await sessionStore.openTerminal(current.id, `cd ${quoted}\n`)
+}
+
+function readShellDirectory(): void {
+  const tab = linkedTerminal.value
+  const bridge = tab ? terminalBridges.get(tab.id) : undefined
+  if (!tab || !bridge?.queryCwd()) ElMessage.info('请先打开这台主机的终端')
 }
 
 async function createFolder(): Promise<void> {
@@ -324,6 +450,17 @@ async function createFolder(): Promise<void> {
 }
 
 watch(cwd, (path) => { sessionMeta.path[props.tab.id] = path })
+watch(shellPath, (path) => {
+  if (followTerminal.value && path.startsWith('/') && path !== cwd.value && linkState.value === 'ok') void load(path)
+})
+onMounted(() => {
+  stopProgress = window.shellHelper.onTransferProgress((event) => {
+    if (transfer.value?.id === event.id) {
+      transfer.value.loaded = event.loaded
+      transfer.value.total = event.total
+    }
+  })
+})
 
 async function createFileAction(): Promise<void> {
   try { await onNewFile() }
@@ -385,19 +522,25 @@ watch(
         <div class="tree-host"><el-icon><Connection /></el-icon><span :title="host?.host">{{ host?.host || '远程主机' }}</span><span class="connection-dot" :class="linkState" :title="linkState === 'ok' ? '已连接' : linkState === 'pending' ? '连接中' : '已断开'"></span></div>
       </aside>
 
-      <section class="fm-content" aria-label="远程文件">
+      <section class="fm-content" aria-label="远程文件" :class="{ 'is-drag': dragActive }" @dragover.prevent="dragActive = true" @dragleave="dragActive = false" @drop.prevent="onDropFiles">
         <header class="folder-heading">
           <div class="folder-title"><el-icon class="folder-hero"><Folder /></el-icon><div><h2 :title="folderName">{{ folderName }}</h2><p>{{ folders }} 个文件夹<span>·</span>{{ entries.length - folders }} 个文件</p></div></div>
           <div class="fm-actions">
-            <input ref="uploadInput" class="upload-input" type="file" aria-label="选择要上传的文件" @change="onUpload" />
+            <input ref="uploadInput" class="upload-input" type="file" multiple aria-label="选择要上传的文件" @change="onUpload" />
+            <input ref="directoryInput" class="upload-input" type="file" webkitdirectory multiple aria-label="选择要上传的目录" @change="onUpload" />
             <el-button text :loading="opening" :disabled="!selected || selected.is_dir || loading || !!loadError" :title="settings.hint('openFile')" :icon="'TopRight'" @click="selected && open(selected)">外部打开</el-button>
             <el-button :icon="'Upload'" :loading="transferring" :disabled="!loaded || loading || !!loadError || linkState !== 'ok'" @click="uploadInput?.click()">上传</el-button>
+            <el-button :disabled="!loaded || loading || !!loadError || linkState !== 'ok'" @click="directoryInput?.click()">上传目录</el-button>
+            <el-button :icon="'Download'" :loading="transferring" :disabled="!loaded || loading || !!loadError || linkState !== 'ok'" @click="onDownload()">下载</el-button>
+            <el-button v-if="host && isTerminalProto(host.protocol)" :disabled="linkState !== 'ok'" @click="openTerminalHere">在此目录打开终端</el-button>
             <el-button :icon="'DocumentAdd'" :disabled="!loaded || loading || !!loadError" @click="createFileAction">新建文件</el-button>
             <el-button :icon="'FolderAdd'" :disabled="!loaded || loading || !!loadError" @click="createFolder">新建文件夹</el-button>
           </div>
         </header>
         <div class="file-controls">
           <span class="list-label">文件 <span>{{ visibleEntries.length }}</span></span>
+          <button v-if="linkedTerminal" class="follow-toggle" type="button" :aria-pressed="followTerminal" @click="followTerminal = !followTerminal">{{ followTerminal ? '正在跟随终端' : '跟随终端目录' }}</button>
+          <button v-if="linkedTerminal" class="follow-toggle" type="button" @click="readShellDirectory">读取终端目录</button>
           <el-input v-model="query" class="file-search" :prefix-icon="'Search'" clearable placeholder="筛选当前目录…" aria-label="筛选当前目录" />
         </div>
         <!-- 加载失败 -->
@@ -416,7 +559,7 @@ watch(
               <span role="columnheader" aria-label="操作"></span>
             </div>
             <div class="file-rows" role="rowgroup">
-              <div v-for="(row, index) in visibleEntries" :key="row.path" class="fm-row" :class="{ selected: selected?.path === row.path, 'is-hidden': row.name.startsWith('.') }" role="row" :aria-selected="selected?.path === row.path" :tabindex="selected ? (selected.path === row.path ? 0 : -1) : (index === 0 ? 0 : -1)" :title="`${row.name}\n${row.mode}\n${fmtTime(row.mtime)}`" @click="selected = row" @focus="selected = row" @dblclick="open(row)" @keydown="onFileKey($event, row)">
+              <div v-for="(row, index) in visibleEntries" :key="row.path" class="fm-row" :class="{ selected: selected?.path === row.path || picked.includes(row.path), 'is-hidden': row.name.startsWith('.') }" role="row" :aria-selected="selected?.path === row.path" :tabindex="selected ? (selected.path === row.path ? 0 : -1) : (index === 0 ? 0 : -1)" :title="`${row.name}\n${row.mode}\n${fmtTime(row.mtime)}`" @click="chooseRow($event, row, index)" @focus="selected = row" @dblclick="open(row)" @keydown="onFileKey($event, row)">
                 <div class="f-name" role="gridcell">
                   <el-icon v-if="row.is_dir" class="folder-icon"><Folder /></el-icon>
                   <span v-else class="file-glyph" :class="fileKind(row).tone" aria-hidden="true"><el-icon><component :is="fileKind(row).icon" /></el-icon></span>
@@ -458,7 +601,9 @@ watch(
       <span class="status-detail" v-if="opening">正在下载并打开…</span>
       <span class="status-detail" v-else-if="editState" :title="editState.message">{{ EDIT_STATUS[editState.status] }} {{ editState.message }}</span>
       <span class="status-detail" v-else-if="selected" :title="selected.path">{{ selected.name }} <span class="status-kind">{{ fileKind(selected).label }} · {{ selected.mode }}</span></span>
-      <span class="status-detail" v-else>双击打开 · Enter 进入 · 文本修改后确认回传</span>
+      <span class="status-detail" v-else-if="transfer">{{ transferLabel }}</span>
+      <span class="status-detail" v-else>双击打开 · Enter 进入 · 可拖入文件上传</span>
+      <button v-if="transfer" class="follow-toggle" type="button" @click="cancelTransfer">取消传输</button>
       <span class="status-count">{{ query ? `${visibleEntries.length} / ` : '' }}{{ entries.length }} 项</span>
     </footer>
   </div>
@@ -468,6 +613,7 @@ watch(
 .file-manager { flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--sh-bg-panel); container-type: inline-size; }
 .fm-toolbar { display: flex; align-items: center; gap: 14px; padding: 12px 18px; background: var(--sh-bg-elevated); border-bottom: 1px solid var(--sh-border); }
 .nav-btns, .fm-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.fm-actions { flex-shrink: 1; flex-wrap: wrap; justify-content: flex-end; max-width: 100%; }
 .fm-icon-button { display: inline-grid; place-items: center; width: 30px; height: 30px; border: 0; border-radius: 6px; background: transparent; color: var(--sh-text-secondary); cursor: pointer; flex-shrink: 0; }
 .fm-icon-button:hover:not(:disabled), .fm-icon-button.active { background: var(--sh-bg-hover); color: var(--sh-accent); }
 .fm-icon-button:disabled { opacity: .35; cursor: default; }
@@ -510,7 +656,7 @@ watch(
 .folder-title p { margin: 0; font-size: 11px; color: var(--sh-text-muted); white-space: nowrap; }
 .folder-title p span { margin: 0 7px; }
 .fm-actions :deep(.el-button) { margin-left: 0; font-size: 12px; }
-.file-controls { display: flex; align-items: center; justify-content: space-between; padding-bottom: 14px; gap: 12px; }
+.file-controls { display: flex; align-items: center; justify-content: space-between; padding-bottom: 14px; gap: 12px; flex-wrap: wrap; }
 .list-label { font-size: 12px; color: var(--sh-text-secondary); font-weight: 600; white-space: nowrap; }
 .list-label > span { display: inline-block; margin-left: 5px; padding: 2px 6px; background: var(--sh-count-bg); border-radius: 5px; font-size: 10px; font-weight: 500; color: var(--sh-text-muted); }
 .file-search { max-width: 218px; font-size: 12px; }
@@ -523,7 +669,10 @@ watch(
 .file-columns .el-icon { font-size: 10px; }
 .file-rows { padding-top: 5px; }
 /* 紧凑行高≈ 36px */
-.fm-row { min-height: 38px; border: 1px solid transparent; border-radius: 7px; cursor: default; margin: 1px 0; transition: background .12s; }
+.fm-row { min-height: 38px; border: 1px solid transparent; border-radius: 7px; cursor: default; margin: 1px 0; transition: background .12s; content-visibility: auto; contain-intrinsic-size: auto 38px; }
+.fm-content.is-drag { outline: 1px dashed var(--sh-accent-border); outline-offset: -8px; }
+.follow-toggle { border: 0; background: transparent; color: var(--sh-text-secondary); font-size: 11px; cursor: pointer; }
+.follow-toggle[aria-pressed="true"] { color: var(--sh-text); }
 .fm-row:hover { background: var(--sh-row-hover); }
 .fm-row.selected { background: var(--sh-row-selected); border-color: var(--sh-row-selected-border); }
 .fm-row:focus-visible { outline-offset: -2px; }

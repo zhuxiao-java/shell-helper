@@ -15,7 +15,7 @@ from ftplib import FTP, error_perm
 
 from ..models import Host
 from .file_provider import (FileProvider, FileStat, ContentError, MAX_CONTENT_BYTES,
-                            MAX_TRANSFER_BYTES, TRANSFER_TIMEOUT, digest, validate_text)
+                            MAX_STREAM_BYTES, MAX_TRANSFER_BYTES, TRANSFER_TIMEOUT, check_path, digest, validate_text)
 
 
 def connect(host: Host, password: str | None) -> FTP:
@@ -245,6 +245,80 @@ class FtpProvider(FileProvider):
             self._ftp.storbinary(f"STOR {path}", io.BytesIO(data), blocksize=65536, callback=sent)
         except error_perm as e:
             raise ContentError(403, "没有上传权限") from e
+
+    def regular_file_size(self, path: str) -> int:
+        entry = self._entry(path)
+        if entry is None:
+            raise ContentError(404, "远程文件不存在")
+        if entry.is_dir or not entry.mode.startswith("-"):
+            raise ContentError(400, "只能传输普通文件")
+        if entry.size > MAX_STREAM_BYTES:
+            raise ContentError(413, "文件超过 8 GiB 上限")
+        return entry.size
+
+    def iter_bytes(self, path: str):
+        def generate():
+            with self.lock:
+                if self.closed:
+                    raise ContentError(410, "文件会话已断开，请重新连接")
+                check_path(path)
+                self.regular_file_size(path)
+                conn = self._ftp.transfercmd(f"RETR {path}")
+                try:
+                    while True:
+                        block = conn.recv(65536)
+                        if not block:
+                            break
+                        yield block
+                finally:
+                    conn.close()
+                    try:
+                        self._ftp.voidresp()
+                    except Exception:
+                        pass
+        return generate()
+
+    def write_stream(self, path: str, chunks) -> int:
+        with self.lock:
+            if self.closed:
+                raise ContentError(410, "文件会话已断开，请重新连接")
+            check_path(path)
+            entry = self._entry(path)
+            if entry and (entry.is_dir or not entry.mode.startswith("-")):
+                raise ContentError(400, "只能传输普通文件")
+            class _Once:
+                def __init__(self):
+                    self._buf = b""
+                    self._chunks = iter(chunks)
+                    self.total = 0
+
+                def read(self, size: int = 65536) -> bytes:
+                    while len(self._buf) < size:
+                        try:
+                            block = next(self._chunks)
+                        except StopIteration:
+                            break
+                        if not isinstance(block, (bytes, bytearray)):
+                            raise ContentError(400, "无效的上传数据")
+                        self.total += len(block)
+                        if self.total > MAX_STREAM_BYTES:
+                            raise ContentError(413, "文件超过 8 GiB 上限")
+                        self._buf += bytes(block)
+                    out, self._buf = self._buf[:size], self._buf[size:]
+                    return out
+
+            source = _Once()
+            try:
+                self._ftp.storbinary(f"STOR {path}", source, blocksize=65536)
+            except error_perm as e:
+                raise ContentError(403, "没有上传权限") from e
+            except ContentError:
+                try:
+                    self._ftp.delete(path)
+                except error_perm:
+                    pass
+                raise
+            return source.total
 
     def close(self) -> None:
         self.closed = True

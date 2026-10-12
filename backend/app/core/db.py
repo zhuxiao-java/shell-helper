@@ -32,8 +32,29 @@ def init_db() -> Engine:
     from .. import models  # noqa: F401
 
     Base.metadata.create_all(_engine)
+    _ensure_known_host_columns(_engine)
     get_state().engine = _engine
     return _engine
+
+
+def _ensure_known_host_columns(engine: Engine) -> None:
+    """已有数据库补上主机密钥材料列。create_all 不会修改旧表。"""
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    if "known_hosts" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("known_hosts")}
+    statements = []
+    if "key_type" not in columns:
+        statements.append("ALTER TABLE known_hosts ADD COLUMN key_type VARCHAR(40) DEFAULT ''")
+    if "public_key" not in columns:
+        statements.append("ALTER TABLE known_hosts ADD COLUMN public_key TEXT DEFAULT ''")
+    if not statements:
+        return
+    with engine.begin() as connection:
+        for statement in statements:
+            connection.execute(text(statement))
 
 
 def get_engine() -> Engine:

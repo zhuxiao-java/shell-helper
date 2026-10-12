@@ -58,10 +58,17 @@ def _connect_kwargs(host: Host, password: str | None) -> dict[str, Any]:
     return kwargs
 
 
-def _client_policy() -> paramiko.SSHClient:
-    client = paramiko.SSHClient()
-    # MVP:自动接受主机密钥。生产应结合 known_hosts 指纹确认。
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+def _open_client(host: Host, password: str | None, sock=None) -> paramiko.SSHClient:
+    from . import host_keys
+
+    client = host_keys.prepare_client(host.host, host.port or 22)
+    try:
+        kwargs = _connect_kwargs(host, password)
+        if sock is not None:
+            kwargs["sock"] = sock
+        client.connect(**kwargs)
+    except paramiko.BadHostKeyException as exc:
+        raise host_keys.HostKeyChanged.from_paramiko(exc, host.port or 22) from exc
     return client
 
 
@@ -74,9 +81,7 @@ def connect(host: Host, password: str | None) -> paramiko.SSHClient:
         chain = host_repo.jump_chain(db, host)
 
     if not chain:
-        client = _client_policy()
-        client.connect(**_connect_kwargs(host, password))
-        return client
+        return _open_client(host, password)
 
     # 逐级建立:先连跳板,再通过 direct-tcpip 通道连目标
     jump_clients: list[paramiko.SSHClient] = []
@@ -84,23 +89,15 @@ def connect(host: Host, password: str | None) -> paramiko.SSHClient:
     with session_scope() as db:
         for jump in chain:
             jpwd = host_repo.resolve_password(db, jump)
-            jc = _client_policy()
-            jc.connect(**_connect_kwargs(jump, jpwd), sock=sock)
+            jc = _open_client(jump, jpwd, sock=sock)
             jump_clients.append(jc)
             sock = jc.get_transport()
 
-    client = _client_policy()
     target_kwargs = _connect_kwargs(host, password)
-    target_kwargs.pop("hostname", None)
-    target_kwargs.pop("port", None)
     transport = sock.open_channel(  # type: ignore[union-attr]
         "direct-tcpip", (host.host, host.port or 22), ("127.0.0.1", 0)
     )
-    client.connect(
-        hostname=host.host, port=host.port or 22, sock=transport,
-        username=_connect_kwargs(host, password).get("username"),
-        **{k: v for k, v in target_kwargs.items() if k in ("password", "pkey", "look_for_keys")},
-    )
+    client = _open_client(host, password, sock=transport)
     # 把跳板 client 挂到目标 client 上,关闭时级联释放
     client._jump_clients = jump_clients  # type: ignore[attr-defined]
     return client

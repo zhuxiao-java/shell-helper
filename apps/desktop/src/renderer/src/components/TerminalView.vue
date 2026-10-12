@@ -4,12 +4,13 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon } from '@xterm/addon-search'
 import { getWsUrl } from '@renderer/api/client'
+import { localCwd } from '@renderer/api/sessions'
 import type { Tab } from '@renderer/stores/session'
 import { useSessionStore } from '@renderer/stores/session'
 import { useSettingsStore } from '@renderer/stores/settings'
 import { sessionMeta, terminalBridges } from '@renderer/utils/workspace'
 import { dispatchShortcut, hasDialog } from '@renderer/utils/shortcuts'
-import { validCommand } from '../../../shared/settings'
+import { validCommand, type TerminalTheme } from '../../../shared/settings'
 
 const props = defineProps<{ tab: Tab; visible: boolean }>()
 const sessionStore = useSessionStore()
@@ -28,7 +29,33 @@ let ws: WebSocket | null = null
 const connected = ref(false)
 const ended = ref(false)
 let resizeTimer: ReturnType<typeof setTimeout> | null = null
+let cwdTimer: ReturnType<typeof setTimeout> | null = null
 let resizeObserver: ResizeObserver | null = null
+let oscBuffer = ''
+const outputDecoder = new TextDecoder('utf-8')
+
+const TERMINAL_THEMES: Record<TerminalTheme, NonNullable<Terminal['options']['theme']>> = {
+  dark: { background: '#16181d', foreground: '#e6e9ef', cursor: '#a8c5a4', cursorAccent: '#16181d', selectionBackground: 'rgba(134, 171, 143, 0.28)', black: '#3a404b', red: '#f0616d', green: '#46b58f', yellow: '#d6a34a', blue: '#5aa2e6', magenta: '#d17fb0', cyan: '#4bb6c4', white: '#c0c7d1', brightBlack: '#69717f', brightRed: '#ff7b86', brightGreen: '#5cd1a4', brightYellow: '#eab85a', brightBlue: '#7bb8f5', brightMagenta: '#e296c2', brightCyan: '#63d0dd', brightWhite: '#e6e9ef' },
+  light: { background: '#f7f5f0', foreground: '#2c3138', cursor: '#3d6b4f', cursorAccent: '#f7f5f0', selectionBackground: 'rgba(61, 107, 79, 0.22)', black: '#2c3138', red: '#b94a55', green: '#2f8f6b', yellow: '#9a7430', blue: '#3d74b5', magenta: '#9a5d86', cyan: '#2f8f9a', white: '#5c6570' },
+  solarized: { background: '#002b36', foreground: '#839496', cursor: '#93a1a1', cursorAccent: '#002b36', selectionBackground: 'rgba(147, 161, 161, 0.28)', black: '#073642', red: '#dc322f', green: '#859900', yellow: '#b58900', blue: '#268bd2', magenta: '#d33682', cyan: '#2aa198', white: '#eee8d5', brightBlack: '#586e75', brightRed: '#cb4b16', brightGreen: '#586e75', brightYellow: '#657b83', brightBlue: '#839496', brightMagenta: '#6c71c4', brightCyan: '#93a1a1', brightWhite: '#fdf6e3' },
+  dracula: { background: '#282a36', foreground: '#f8f8f2', cursor: '#f8f8f2', cursorAccent: '#282a36', selectionBackground: 'rgba(68, 71, 90, 0.8)', black: '#21222c', red: '#ff5555', green: '#50fa7b', yellow: '#f1fa8c', blue: '#bd93f9', magenta: '#ff79c6', cyan: '#8be9fd', white: '#f8f8f2', brightBlack: '#6272a4', brightRed: '#ff6e6e', brightGreen: '#69ff94', brightYellow: '#ffffa5', brightBlue: '#d6acff', brightMagenta: '#ff92df', brightCyan: '#a4ffff', brightWhite: '#ffffff' },
+  monokai: { background: '#272822', foreground: '#f8f8f2', cursor: '#f8f8f0', cursorAccent: '#272822', selectionBackground: 'rgba(73, 72, 62, 0.8)', black: '#272822', red: '#f92672', green: '#a6e22e', yellow: '#f4bf75', blue: '#66d9ef', magenta: '#ae81ff', cyan: '#a1efe4', white: '#f8f8f2', brightBlack: '#75715e', brightRed: '#f92672', brightGreen: '#a6e22e', brightYellow: '#f4bf75', brightBlue: '#66d9ef', brightMagenta: '#ae81ff', brightCyan: '#a1efe4', brightWhite: '#f9f8f5' }
+}
+
+function themeOf(name: TerminalTheme) {
+  return TERMINAL_THEMES[name] ?? TERMINAL_THEMES.dark
+}
+
+function noteOutput(chunk: string): void {
+  oscBuffer = (oscBuffer + chunk).slice(-8192)
+  const pattern = /\x1b\](?:7;file:\/\/[^/\x07\x1b]*(\/[^ \x07\x1b]*)|1337;CurrentDir=([^\x07\x1b]+))(?:\x07|\x1b\\)/g
+  let found = ''
+  for (const match of oscBuffer.matchAll(pattern)) {
+    const raw = match[1] || match[2] || ''
+    try { found = decodeURIComponent(raw) } catch { found = raw }
+  }
+  if (found.startsWith('/')) sessionMeta.shellPath[props.tab.id] = found
+}
 
 function rememberSize(): void {
   if (!term) return
@@ -61,9 +88,26 @@ function disconnectWs(notify: boolean): void {
   }
 }
 
+function scheduleLocalCwd(): void {
+  if (cwdTimer) clearTimeout(cwdTimer)
+  const sessionId = props.tab.session?.session_id
+  if (props.tab.hostId || !sessionId || !term) return
+  cwdTimer = setTimeout(async () => {
+    try {
+      const path = await localCwd(sessionId)
+      if (path.startsWith('/')) sessionMeta.shellPath[props.tab.id] = path
+    } catch { /* 读取失败时保留上一次目录 */ }
+    if (term) scheduleLocalCwd()
+  }, 2000)
+}
+
 function cleanupTerm(): void {
   terminalBridges.delete(props.tab.id)
   delete sessionMeta.terminal[props.tab.id]
+  delete sessionMeta.shellPath[props.tab.id]
+  oscBuffer = ''
+  if (cwdTimer) clearTimeout(cwdTimer)
+  cwdTimer = null
   if (resizeTimer) clearTimeout(resizeTimer)
   resizeObserver?.disconnect()
   resizeObserver = null
@@ -83,32 +127,10 @@ function openTerminal(): void {
   term = new Terminal({
     cursorBlink: true,
     fontSize: settings.value.terminal.fontSize,
-    fontFamily: "Menlo, Monaco, 'JetBrains Mono', 'Courier New', monospace",
+    fontFamily: settings.value.terminal.fontFamily,
     lineHeight: 1.4,
     scrollback: 5000,
-    theme: {
-      background: '#16181d',
-      foreground: '#e6e9ef',
-      cursor: '#a8c5a4',
-      cursorAccent: '#16181d',
-      selectionBackground: 'rgba(134, 171, 143, 0.28)',
-      black: '#3a404b',
-      red: '#f0616d',
-      green: '#46b58f',
-      yellow: '#d6a34a',
-      blue: '#5aa2e6',
-      magenta: '#d17fb0',
-      cyan: '#4bb6c4',
-      white: '#c0c7d1',
-      brightBlack: '#69717f',
-      brightRed: '#ff7b86',
-      brightGreen: '#5cd1a4',
-      brightYellow: '#eab85a',
-      brightBlue: '#7bb8f5',
-      brightMagenta: '#e296c2',
-      brightCyan: '#63d0dd',
-      brightWhite: '#e6e9ef'
-    },
+    theme: themeOf(settings.value.terminal.theme),
     convertEol: false
   })
   fit = new FitAddon()
@@ -129,18 +151,33 @@ function openTerminal(): void {
 
   ws = new WebSocket(getWsUrl(`/api/terminals/${sessionId}/ws`))
   ws.binaryType = 'arraybuffer'
+  const send = (data: string): boolean => {
+    if (!connected.value || ws?.readyState !== WebSocket.OPEN) return false
+    ws.send(new TextEncoder().encode(data))
+    return true
+  }
 
   ws.onopen = () => {
     connected.value = true
     ended.value = false
     sendResize()
     if (props.visible && !hasDialog()) term!.focus()
+    const command = props.tab.startupCommand
+    if (command) {
+      props.tab.startupCommand = ''
+      send(command)
+    }
+    scheduleLocalCwd()
   }
   ws.onmessage = (ev) => {
     if (ev.data instanceof ArrayBuffer) {
-      term!.write(new Uint8Array(ev.data))
+      const bytes = new Uint8Array(ev.data)
+      term!.write(bytes)
+      try { noteOutput(outputDecoder.decode(bytes, { stream: true })) } catch { /* 目录标记解析失败不影响输出 */ }
     } else {
-      term!.write(String(ev.data))
+      const text = String(ev.data)
+      term!.write(text)
+      try { noteOutput(text) } catch { /* 目录标记解析失败不影响输出 */ }
     }
   }
   ws.onclose = (event) => {
@@ -157,12 +194,12 @@ function openTerminal(): void {
     term?.writeln('\r\n\x1b[31m[终端连接错误]\x1b[0m')
   }
 
-  const send = (data: string): boolean => {
-    if (!connected.value || ws?.readyState !== WebSocket.OPEN) return false
-    ws.send(new TextEncoder().encode(data))
-    return true
-  }
   term.onData(send)
+  term.onSelectionChange(() => {
+    if (!settings.value.terminal.copyOnSelect) return
+    const text = term?.getSelection() || ''
+    if (text) void navigator.clipboard.writeText(text).catch(() => undefined)
+  })
   terminalBridges.set(props.tab.id, {
     sessionId,
     ready: () => connected.value,
@@ -171,7 +208,8 @@ function openTerminal(): void {
       const sent = send(command)
       if (sent) term?.focus()
       return sent
-    }
+    },
+    queryCwd: () => props.tab.hostId ? send("printf '\\033]7;file://shell-helper%s\\007' \"$PWD\"\n") : false
   })
   term.onResize(({ cols, rows }) => {
     sendResize(cols, rows)
@@ -262,6 +300,14 @@ watch(() => settings.value.terminal.fontSize, (size) => {
   fit?.fit()
   sendResize()
   rememberSize()
+})
+watch(() => settings.value.terminal.fontFamily, (family) => {
+  if (!term || !family) return
+  term.options.fontFamily = family
+  fit?.fit()
+})
+watch(() => settings.value.terminal.theme, (theme) => {
+  if (term) term.options.theme = themeOf(theme)
 })
 
 onBeforeUnmount(() => {

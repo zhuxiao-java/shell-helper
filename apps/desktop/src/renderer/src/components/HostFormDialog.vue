@@ -3,6 +3,7 @@ import { computed, reactive, ref, watch } from 'vue'
 import type { FormInstance, FormRules } from 'element-plus'
 import { useHostStore } from '@renderer/stores/host'
 import * as hostApi from '@renderer/api/hosts'
+import { withHostKey } from '@renderer/utils/hostKey'
 import type { Host, HostInput, Protocol, AuthType } from '@renderer/api/types'
 
 const visible = defineModel<boolean>({ required: true })
@@ -170,9 +171,10 @@ async function testConnection(): Promise<void> {
   testMessage.value = ''
   saveError.value = ''
   try {
-    const result = await hostApi.testHost({ ...form, id: props.editHost?.id })
+    const result = await withHostKey(() => hostApi.testHost({ ...form, id: props.editHost?.id }))
     testMessage.value = result.message
   } catch (error) {
+    if (error === 'cancel' || error === 'close') return
     saveError.value = (error as Error).message || '连接失败'
   } finally { testing.value = false }
 }

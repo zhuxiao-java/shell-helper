@@ -65,5 +65,7 @@ class KnownHost(Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
     host: Mapped[str] = mapped_column(String(255))
     port: Mapped[int] = mapped_column(default=22)
+    key_type: Mapped[str] = mapped_column(String(40), default="")
+    public_key: Mapped[str] = mapped_column(Text, default="")
     fingerprint: Mapped[str] = mapped_column(String(200), default="")
     added_at: Mapped[datetime] = mapped_column(default=_now)

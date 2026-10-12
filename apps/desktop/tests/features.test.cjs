@@ -114,6 +114,8 @@ test('设置校验、冲突、控制字符及平台按键归一化', () => {
   const upgraded = validateSettings(legacy)
   assert.equal(upgraded.appearance, 'light')
   assert.equal(upgraded.terminal.fontSize, 14)
+  assert.equal(upgraded.terminal.copyOnSelect, false)
+  assert.equal(upgraded.terminal.theme, 'dark')
   assert.throws(() => validateSettings({ ...defaults(), terminal: { fontSize: 8 } }), /字号/)
   settings.commands.push({ id: 'test', name: '状态', command: 'git status', shortcut: 'Mod+N', enabled: false })
   assert.throws(() => validateSettings(settings), /重复/)

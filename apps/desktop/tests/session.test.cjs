@@ -22,6 +22,7 @@ Module._load = function (request, parent, isMain) {
   if (request === 'element-plus') return { ElMessage: { error() {} } }
   if (request === './host' && parent.filename.endsWith('session.ts')) return { useHostStore: () => ({ byId: id => hosts.find(host => host.id === id) }) }
   if (request === '@renderer/utils/recent') return { recordConnect(id) { recorded.push(id) } }
+  if (request === '@renderer/utils/hostKey') return { withHostKey: run => run() }
   if (request === '@renderer/api/types') return require('../src/renderer/src/api/types.ts')
   return original.call(this, request, parent, isMain)
 }

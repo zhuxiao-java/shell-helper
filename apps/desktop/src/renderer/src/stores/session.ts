@@ -6,6 +6,7 @@ import { useHostStore } from './host'
 import { recordConnect } from '@renderer/utils/recent'
 import type { Session } from '@renderer/api/types'
 import { isTerminalProto, isFileProto, fileSessionType, protocolLabel } from '@renderer/api/types'
+import { withHostKey } from '@renderer/utils/hostKey'
 
 export interface Tab {
   id: string
@@ -15,6 +16,7 @@ export interface Tab {
   session: Session | null
   connecting: boolean
   error: string
+  startupCommand: string
 }
 
 export const useSessionStore = defineStore('sessions', () => {
@@ -34,7 +36,8 @@ export const useSessionStore = defineStore('sessions', () => {
       kind,
       session: null,
       connecting: true,
-      error: ''
+      error: '',
+      startupCommand: ''
     })
     tabs.value.push(tab)
     activeId.value = tab.id
@@ -44,9 +47,9 @@ export const useSessionStore = defineStore('sessions', () => {
   async function connect(tab: Tab, type: Session['type']): Promise<void> {
     tab.error = ''
     try {
-      const session = tab.hostId
-        ? await sessionApi.openSession(tab.hostId, type)
-        : await sessionApi.openLocalSession()
+      const session = await withHostKey(() => tab.hostId
+        ? sessionApi.openSession(tab.hostId, type)
+        : sessionApi.openLocalSession())
       if (!tabs.value.some(t => t.id === tab.id)) {
         await sessionApi.closeSession(session.session_id)
         return
@@ -54,8 +57,9 @@ export const useSessionStore = defineStore('sessions', () => {
       tab.session = session
       if (tab.hostId) recordConnect(tab.hostId)
     } catch (err) {
-      tab.error = (err as Error).message || '连接失败'
-      ElMessage.error(`连接失败: ${tab.error}`)
+      const cancelled = err === 'cancel' || err === 'close'
+      tab.error = cancelled ? '未信任主机密钥' : ((err as Error).message || '连接失败')
+      if (!cancelled) ElMessage.error(`连接失败: ${tab.error}`)
     } finally {
       tab.connecting = false
     }
@@ -89,7 +93,7 @@ export const useSessionStore = defineStore('sessions', () => {
     return tab.id
   }
 
-  async function openTerminal(hostId: string): Promise<string> {
+  async function openTerminal(hostId: string, startupCommand = ''): Promise<string> {
     const host = hostStore.byId(hostId)
     if (!host || !isTerminalProto(host.protocol)) {
       ElMessage.error('该连接不支持终端')
@@ -98,6 +102,7 @@ export const useSessionStore = defineStore('sessions', () => {
     const name = host.name
     const label = protocolLabel(host?.protocol ?? 'ssh')
     const tab = makeTab(hostId, 'terminal', `${name} · ${label}`)
+    tab.startupCommand = startupCommand
     await connect(tab, 'terminal')
     return tab.id
   }
@@ -126,6 +131,12 @@ export const useSessionStore = defineStore('sessions', () => {
     activeId.value = id
   }
 
+  function rename(id: string, title: string): void {
+    const tab = tabs.value.find((item) => item.id === id)
+    const next = title.trim().slice(0, 80)
+    if (tab && next) tab.title = next
+  }
+
   function close(id: string): void {
     const tab = tabs.value.find((t) => t.id === id)
     if (tab?.session) {
@@ -143,5 +154,5 @@ export const useSessionStore = defineStore('sessions', () => {
     }
   }
 
-  return { tabs, activeId, active, openLocalTerminal, openTerminal, openFiles, openDefault, focus, close, reconnect }
+  return { tabs, activeId, active, openLocalTerminal, openTerminal, openFiles, openDefault, focus, close, rename, reconnect }
 })

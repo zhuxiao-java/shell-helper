@@ -31,7 +31,19 @@ const api = {
     const listener = (_event: Electron.IpcRendererEvent, items: EditItem[]): void => callback(items)
     ipcRenderer.on('edits:changed', listener)
     return () => ipcRenderer.removeListener('edits:changed', listener)
-  }
+  },
+  chooseSavePath: (name: string): Promise<string | null> => ipcRenderer.invoke('dialog:save', name),
+  chooseDirectory: (): Promise<string | null> => ipcRenderer.invoke('dialog:directory'),
+  listLocalFiles: (root: string): Promise<{ path: string; relative: string; size: number }[]> => ipcRenderer.invoke('files:list-local', root),
+  downloadTo: (input: { id: string; sessionId: string; remotePath: string; destPath: string }): Promise<void> => ipcRenderer.invoke('files:download', input),
+  uploadFrom: (input: { id: string; sessionId: string; directory: string; localPath: string; name: string; overwrite: boolean }): Promise<void> => ipcRenderer.invoke('files:upload', input),
+  cancelTransfer: (id: string): Promise<void> => ipcRenderer.invoke('files:cancel', id),
+  onTransferProgress(callback: (event: { id: string; loaded: number; total: number }) => void): () => void {
+    const listener = (_event: Electron.IpcRendererEvent, payload: { id: string; loaded: number; total: number }): void => callback(payload)
+    ipcRenderer.on('transfer:progress', listener)
+    return () => ipcRenderer.removeListener('transfer:progress', listener)
+  },
+  copyText: (text: string): Promise<void> => ipcRenderer.invoke('clipboard:write', text)
 }
 
 contextBridge.exposeInMainWorld('shellHelper', api)
