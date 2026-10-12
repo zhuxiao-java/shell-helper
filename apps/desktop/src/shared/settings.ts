@@ -26,7 +26,7 @@ export interface Settings {
 export interface SettingsResult { settings: Settings; warning?: string }
 export type StorageLocationId = 'drafts' | 'database' | 'settings' | 'logs'
 export interface StorageLocation { id: StorageLocationId; path: string | null; unavailable?: string }
-export interface StorageLocations { locations: StorageLocation[]; warning?: string }
+export interface StorageLocations { locations: StorageLocation[]; root: string; warning?: string }
 
 export function defaults(): Settings {
   const bindings = Object.fromEntries(Object.keys(ACTIONS).map(id => [id, { shortcut: '', enabled: true }])) as Settings['bindings']

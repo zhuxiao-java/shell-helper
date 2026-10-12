@@ -8,7 +8,7 @@ const store = useSettingsStore()
 const draft = ref(defaults())
 const section = ref('shortcuts')
 const saving = ref(false)
-const storage = ref<StorageLocations>({ locations: [] })
+const storage = ref<StorageLocations>({ locations: [], root: '' })
 const storageLoading = ref(false)
 const storageAction = ref('')
 const storageLabels: Record<StorageLocationId, { title: string; description: string; icon: string }> = {
@@ -137,7 +137,11 @@ function addCommand(): void {
         <el-button text :icon="'FolderOpened'" @click="section = 'storage'">查看临时文件存储位置</el-button>
       </el-tab-pane>
       <el-tab-pane label="存储位置" name="storage">
-        <div class="storage-intro"><div><h3>你的数据，存在哪里</h3><p>以下为当前实际使用的位置，可复制完整路径或在系统文件管理器中查看。</p></div><el-button text :icon="'Refresh'" :loading="storageLoading" @click="loadStorage">刷新</el-button></div>
+        <div class="storage-intro"><div><h3>数据文件夹</h3><p>草稿、连接数据库、设置和日志都放在这一个文件夹里。</p></div><el-button text :icon="'Refresh'" :loading="storageLoading" @click="loadStorage">刷新</el-button></div>
+        <div v-if="storage.root" class="storage-home">
+          <code class="storage-home-path">{{ storage.root }}</code>
+          <el-button size="small" :icon="'FolderOpened'" @click="storageOperation('settings', 'open')">打开数据文件夹</el-button>
+        </div>
         <p v-if="storage.warning" class="storage-warning" role="alert">{{ storage.warning }}</p>
         <p v-if="storageLoading && !storage.locations.length" class="setting-note" role="status">正在读取存储位置…</p>
         <article v-for="item in storage.locations" :key="item.id" class="storage-card" :data-storage-id="item.id">
@@ -163,6 +167,8 @@ function addCommand(): void {
 
 <style scoped>
 .setting-note { font-size: 12px; line-height: 1.8; color: var(--sh-text-muted); margin: 0 0 18px; }
+.storage-home { display: flex; align-items: center; gap: 12px; margin: 0 0 16px; flex-wrap: wrap; }
+.storage-home-path { flex: 1; min-width: 0; display: block; padding: 10px 12px; border: 1px solid var(--sh-storage-path-border); border-radius: 6px; background: var(--sh-storage-path-bg); color: var(--sh-storage-path-text); font: 11px/1.7 var(--sh-font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 .binding-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(160px, 300px) 40px; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--sh-border); font-size: 13px; }
 .font-size { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; }
 .command-card { padding: 16px; margin-bottom: 14px; border: 1px solid var(--sh-border); border-radius: 10px; display: grid; gap: 12px; background: var(--sh-bg-elevated); }

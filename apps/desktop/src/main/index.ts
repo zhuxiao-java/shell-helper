@@ -5,6 +5,7 @@ import { SettingsService } from './settings'
 import { StorageService } from './storage'
 import { ExternalEditService } from './external-edit'
 import { launchEditor, validateEditor } from './editor'
+import { adoptLegacyDirectory, legacyDataDirectory } from './data-home'
 import { cancelTransfer, downloadTo, listLocalFiles, uploadFrom } from './transfer'
 import { validateSettings, type StorageLocationId } from '../shared/settings'
 import type { OpenFileRequest } from '../shared/external'
@@ -158,14 +159,20 @@ ipcMain.handle('app:version', () => app.getVersion())
 
 function bootstrap(): void {
   app.whenReady().then(async () => {
+    const userData = app.getPath('userData')
+    const home = app.getPath('home')
+    adoptLegacyDirectory(legacyDataDirectory({
+      home, platform: process.platform,
+      appData: process.env.APPDATA, xdgDataHome: process.env.XDG_DATA_HOME
+    }), userData, home)
     storage = new StorageService({
-      userData: app.getPath('userData'), backend: () => backendManager.start(),
+      userData, backend: () => backendManager.start(),
       openPath: directory => shell.openPath(directory), copyText: text => clipboard.writeText(text)
     })
-    settings = new SettingsService(path.join(app.getPath('userData'), 'settings.json'))
+    settings = new SettingsService(path.join(userData, 'settings.json'))
     await settings.load()
     if (settings.get().settings.editor.path) approvedEditors.add(settings.get().settings.editor.path)
-    edits = new ExternalEditService(path.join(app.getPath('userData'), 'drafts'), {
+    edits = new ExternalEditService(path.join(userData, 'drafts'), {
       editor: () => settings.get().settings.editor,
       launch: launchEditor,
       changed: items => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('edits:changed', items) },
