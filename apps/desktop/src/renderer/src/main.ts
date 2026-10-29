@@ -6,8 +6,8 @@ import 'element-plus/dist/index.css'
 import {
   ArrowDown, ArrowLeft, ArrowRight, Bottom, Box, CaretRight, Cellphone, Close, Coin, Connection,
   CopyDocument, Cpu, Delete, Document, DocumentAdd, DocumentCopy, Download, Edit, EditPen, Expand,
-  Fold, Folder, FolderAdd, FolderOpened, House, Link, Loading, Lock, Monitor, MoreFilled, Picture,
-  Plus, Pointer, Refresh, Right, Search, Setting, Tickets, Top, TopRight, Upload, Warning, WarningFilled
+  Fold, Folder, FolderAdd, FolderOpened, Grid, House, Link, List, Loading, Lock, Monitor, Moon, MoreFilled, Picture, Share,
+  Plus, Pointer, Refresh, Right, Search, Setting, Star, StarFilled, Sunny, Tickets, Top, TopRight, Upload, Warning, WarningFilled
 } from '@element-plus/icons-vue'
 import '@xterm/xterm/css/xterm.css'
 import './styles/main.scss'
@@ -16,8 +16,8 @@ import App from './App.vue'
 const icons = {
   ArrowDown, ArrowLeft, ArrowRight, Bottom, Box, CaretRight, Cellphone, Close, Coin, Connection,
   CopyDocument, Cpu, Delete, Document, DocumentAdd, DocumentCopy, Download, Edit, EditPen, Expand,
-  Fold, Folder, FolderAdd, FolderOpened, House, Link, Loading, Lock, Monitor, MoreFilled, Picture,
-  Plus, Pointer, Refresh, Right, Search, Setting, Tickets, Top, TopRight, Upload, Warning, WarningFilled
+  Fold, Folder, FolderAdd, FolderOpened, Grid, House, Link, List, Loading, Lock, Monitor, Moon, MoreFilled, Picture, Share,
+  Plus, Pointer, Refresh, Right, Search, Setting, Star, StarFilled, Sunny, Tickets, Top, TopRight, Upload, Warning, WarningFilled
 }
 
 // 外壳默认浅色，可在设置里改为深色或跟随系统；终端区域保持深色

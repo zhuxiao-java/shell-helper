@@ -346,6 +346,18 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 200)
         self.assertEqual(self.remote.files[self.query['path']], b"new")
 
+    async def test_stat_returns_remote_metadata_for_watching(self):
+        status, _, _ = await asgi_request(self.app, 'GET', '/api/files/stat', self.query)
+        self.assertEqual(status, 401)
+        status, headers, data = await asgi_request(self.app, 'GET', '/api/files/stat', self.query, headers=self.auth)
+        self.assertEqual(status, 200)
+        payload = json.loads(data)
+        self.assertEqual(payload['size'], len(b"original\r\n"))
+        self.assertFalse(payload['is_dir'])
+        self.assertTrue(payload['mode'].startswith('-'))
+        self.assertEqual(headers[b'cache-control'], b'no-store')
+        self.assertEqual((await asgi_request(self.app, 'GET', '/api/files/stat', {**self.query, 'path': '/missing'}, headers=self.auth))[0], 404)
+
     async def test_limit_conflict_missing_and_invalid_session(self):
         headers = {**self.auth, 'X-Expected-SHA256': digest(b"original\r\n")}
         for data, status in [(b'x' * (MAX_CONTENT_BYTES + 1), 413), (b'a\x00', 415)]:

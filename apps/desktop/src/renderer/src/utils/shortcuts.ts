@@ -21,6 +21,8 @@ export function dispatchShortcut(event: KeyboardEvent): boolean {
   if (!terminal && target?.closest?.('input, textarea, select, [contenteditable="true"]')) return false
   const key = fromKey(event, context.mac)
   if (!key) return false
+  // 终端内的 Cmd/Ctrl+F 属于终端搜索，不抢全局搜索连接
+  if (terminal && (key === 'Mod+F' || key === 'Ctrl+F')) return false
   const settings = context.settings()
   const action = (Object.entries(settings.bindings) as [ActionId, Settings['bindings'][ActionId]][])
     .find(([, b]) => b.enabled && b.shortcut === key)?.[0]

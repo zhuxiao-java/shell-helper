@@ -11,17 +11,19 @@ require.extensions['.ts'] = (module, file) => {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true }
   }).outputText, file)
 }
-const { defaults, validateSettings, fromKey, validCommand, shortcutError } = require('../src/shared/settings.ts')
+const { defaults, validateSettings, fromKey, validCommand, shortcutError, displayShortcut } = require('../src/shared/settings.ts')
 const { SettingsService } = require('../src/main/settings.ts')
 const { StorageService } = require('../src/main/storage.ts')
+const { adoptLegacyDirectory, legacyDataDirectory } = require('../src/main/data-home.ts')
 const { ExternalEditService } = require('../src/main/external-edit.ts')
 const { isTerminalProto, isFileProto, fileSessionType } = require('../src/renderer/src/api/types.ts')
 const hash = data => createHash('sha256').update(data).digest('hex')
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms))
 
-async function fixture(t, custom = false) {
+async function fixture(t, custom = false, options = {}) {
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'shell-helper-test-'))
   let remote = Buffer.from('original\r\n')
+  let remoteMtime = 1000
   const launch = []
   const requests = []
   let uploadHook
@@ -33,17 +35,18 @@ async function fixture(t, custom = false) {
     request: async (route, init) => {
       requests.push({ route, init })
       if (route.startsWith('/api/sessions/')) return new Response(JSON.stringify({ host_id: 'isolated-host', type: 'sftp' }))
-      if (!init) return new Response(remote, { headers: { 'X-Content-SHA256': hash(remote) } })
+      if (route.startsWith('/api/files/stat')) return new Response(JSON.stringify({ size: remote.length, mtime: remoteMtime, is_dir: false, mode: '-rw-r--r--' }), { headers: { 'Content-Type': 'application/json' } })
+      if (!init || !init.method) return new Response(remote, { headers: { 'X-Content-SHA256': hash(remote) } })
       if (init.headers['X-Expected-SHA256'] !== hash(remote)) return new Response(JSON.stringify({ detail: '远程冲突' }), { status: 409 })
       if (uploadHook) await uploadHook()
       remote = Buffer.from(init.body)
       return new Response(JSON.stringify({ sha256: hash(remote) }))
     }
   }
-  const service = new ExternalEditService(path.join(root, 'drafts'), deps)
+  const service = new ExternalEditService(path.join(root, 'drafts'), deps, { remotePollMs: 0, ...options })
   await service.initialize()
   t.after(async () => { await service.stop(); await fsp.rm(root, { recursive: true, force: true }) })
-  return { service, root, deps, input, launch, requests, remote: () => remote, changeRemote: data => { remote = Buffer.from(data) }, onUpload: fn => { uploadHook = fn } }
+  return { service, root, deps, input, launch, requests, remote: () => remote, changeRemote: data => { remote = Buffer.from(data); remoteMtime += 1 }, onUpload: fn => { uploadHook = fn } }
 }
 
 test('存储位置使用实际后端路径、只打开目录、仅允许预定义位置', async t => {
@@ -69,6 +72,36 @@ test('存储位置使用实际后端路径、只打开目录、仅允许预定�
     await assert.rejects(service.open(id), /不允许/)
     await assert.rejects(service.copy(id), /不允许/)
   }
+})
+
+test('旧的后端目录会并入应用数据文件夹，已有文件不被覆盖', async t => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'shell-helper-legacy-'))
+  t.after(() => fsp.rm(root, { recursive: true, force: true }))
+  const legacy = path.join(root, 'shell-helper')
+  const home = path.join(root, 'Shell Helper')
+  await fsp.mkdir(path.join(legacy, 'logs'), { recursive: true })
+  await fsp.writeFile(path.join(legacy, 'shell-helper.db'), 'legacy-db')
+  await fsp.writeFile(path.join(legacy, '.master.key'), 'legacy-key')
+  await fsp.writeFile(path.join(legacy, 'logs', 'backend.log'), 'legacy-log')
+  const outside = await fsp.mkdtemp(path.join(os.tmpdir(), 'shell-helper-outside-'))
+  t.after(() => fsp.rm(outside, { recursive: true, force: true }))
+  adoptLegacyDirectory(legacy, outside, root)
+  assert.equal(fs.existsSync(path.join(outside, 'shell-helper.db')), false)
+  assert.equal(fs.existsSync(path.join(legacy, 'shell-helper.db')), true)
+  await fsp.mkdir(home, { recursive: true })
+  await fsp.writeFile(path.join(home, 'settings.json'), '{}')
+  adoptLegacyDirectory(legacy, home, root)
+  assert.equal(await fsp.readFile(path.join(home, 'shell-helper.db'), 'utf8'), 'legacy-db')
+  assert.equal(await fsp.readFile(path.join(home, '.master.key'), 'utf8'), 'legacy-key')
+  assert.equal(await fsp.readFile(path.join(home, 'logs', 'backend.log'), 'utf8'), 'legacy-log')
+  assert.equal(fs.existsSync(path.join(legacy, 'shell-helper.db')), false)
+  await fsp.mkdir(legacy, { recursive: true })
+  await fsp.writeFile(path.join(legacy, 'shell-helper.db'), 'newer-legacy')
+  adoptLegacyDirectory(legacy, home, root)
+  assert.equal(await fsp.readFile(path.join(home, 'shell-helper.db'), 'utf8'), 'legacy-db')
+  assert.equal(legacyDataDirectory({ home: '/Users/me', platform: 'darwin' }), '/Users/me/Library/Application Support/shell-helper')
+  adoptLegacyDirectory(home, home, root)
+  assert.equal(await fsp.readFile(path.join(home, 'settings.json'), 'utf8'), '{}')
 })
 
 test('后端不可用仍可访问本地草稿，系统打开失败明确报错', async t => {
@@ -108,6 +141,10 @@ test('内存数据库不伪造文件路径，非法后端路径不给予打开�
 test('设置校验、冲突、控制字符及平台按键归一化', () => {
   const settings = defaults()
   assert.deepEqual(validateSettings(settings), settings)
+  assert.equal(settings.bindings.searchConnections.shortcut, 'Mod+F')
+  assert.equal(settings.bindings.closeTab.shortcut, 'Mod+W')
+  assert.equal(displayShortcut('Mod+Alt+ArrowLeft', true), '⌘⌥←')
+  assert.equal(displayShortcut('Mod+F', false), 'Ctrl+F')
   const legacy = defaults()
   delete legacy.appearance
   delete legacy.terminal
@@ -177,11 +214,15 @@ test('快捷键单次分发、输入法、长按、表单、弹窗和终端控�
   dialog = true; callback(event()); dialog = false
   blocked = true; callback(event()); blocked = false
   assert.equal(count, 1)
+  const beforeTerminal = count
   terminal = true
+  callback(event({ key: 'f', code: 'KeyF', keyCode: 70, metaKey: true, shiftKey: false }))
+  assert.equal(count, beforeTerminal)
   callback(event({ metaKey: false, ctrlKey: true }))
-  assert.equal(count, 1)
+  assert.equal(count, beforeTerminal)
   callback(event())
-  assert.equal(count, 2)
+  assert.equal(count, beforeTerminal + 1)
+  terminal = false
   dispose()
 })
 
@@ -284,4 +325,36 @@ test('本地超限与符号链接副本拒绝读取', async t => {
   await fsp.symlink(`${file}.original`, file)
   await f.service.refresh()
   assert.match(f.service.list()[0].message, /普通文件/)
+})
+
+test('远程文件被其他人修改后自动同步干净的本地副本', async t => {
+  const f = await fixture(t, false, { remotePollMs: 30 })
+  await f.service.open(f.input)
+  const file = f.launch[0].file
+  f.changeRemote('remote update')
+  for (let i = 0; i < 100 && await fsp.readFile(file, 'utf8') !== 'remote update'; i++) await pause(30)
+  assert.equal(await fsp.readFile(file, 'utf8'), 'remote update')
+  const item = f.service.list()[0]
+  assert.equal(item.dirty, false)
+  assert.equal(item.status, 'synced')
+  assert.match(item.message, /已同步远程更新/)
+})
+
+test('本地有修改时远程变化标记冲突，用远程版本覆盖本地后恢复同步', async t => {
+  const f = await fixture(t, false, { remotePollMs: 30 })
+  await f.service.open(f.input)
+  const file = f.launch[0].file
+  await fsp.writeFile(file, 'local edit')
+  await f.service.refresh()
+  f.changeRemote('remote edit')
+  for (let i = 0; i < 100 && f.service.list()[0].status !== 'conflict'; i++) await pause(30)
+  assert.equal(f.service.list()[0].status, 'conflict')
+  assert.equal(await fsp.readFile(file, 'utf8'), 'local edit')
+  assert.equal(f.service.list()[0].dirty, true)
+  await f.service.reload(f.service.list()[0].id)
+  assert.equal(await fsp.readFile(file, 'utf8'), 'remote edit')
+  const item = f.service.list()[0]
+  assert.equal(item.status, 'synced')
+  assert.equal(item.dirty, false)
+  assert.match(item.message, /已使用远程版本覆盖本地副本/)
 })

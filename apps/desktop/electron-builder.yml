@@ -22,6 +22,10 @@ electronLanguages:
 asar: true
 mac:
   category: public.app-category.developer-tools
+  extendInfo:
+    NSLocalNetworkUsageDescription: Shell Helper 使用局域网发现同网段用户，用于分享连接、终端和远程协助。
+    NSMicrophoneUsageDescription: Shell Helper 在远程协助中使用麦克风与对方通话。
+    NSScreenCaptureUsageDescription: Shell Helper 在远程协助中共享你的屏幕。
   target: ["dmg", "zip"]
   notarize: false
 win:

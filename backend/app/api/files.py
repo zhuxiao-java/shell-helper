@@ -5,8 +5,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import posixpath
 import queue
+import re
 import threading
 from ftplib import error_perm
 from urllib.parse import quote
@@ -40,6 +42,18 @@ def _content_operation(operation):
         raise HTTPException(403, "远程文件权限不足或服务器拒绝访问") from e
     except (OSError, EOFError) as e:
         raise HTTPException(502, f"文件传输失败: {e}") from e
+
+
+@router.get("/stat")
+def stat_file(session_id: str, path: str):
+    """轻量元数据，供外部编辑副本检测远程变化。"""
+    provider = _provider_or_404(session_id)
+    entry = _content_operation(lambda: provider.stat(path))
+    return Response(
+        content=json.dumps({"size": entry.size, "mtime": entry.mtime, "is_dir": entry.is_dir, "mode": entry.mode}),
+        media_type="application/json",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.get("/content")
@@ -106,19 +120,32 @@ def _download_name(path: str) -> str:
 
 
 @router.get("/download")
-def download_file(session_id: str, path: str):
+def download_file(request: Request, session_id: str, path: str):
     provider = _provider_or_404(session_id)
     size = _content_operation(lambda: provider.regular_file_size(path))
     name = _download_name(path)
+    start = 0
+    range_header = request.headers.get("range", "")
+    match = re.fullmatch(r"bytes=(\d+)-\d*", range_header.strip())
+    if match:
+        start = int(match.group(1))
+        if start >= size:
+            return Response(status_code=416, headers={"Content-Range": f"bytes */{size}"})
+    length = size - start
 
     def generate():
-        yield from provider.iter_bytes(path)
+        yield from provider.iter_bytes(path, start)
 
-    return StreamingResponse(generate(), media_type="application/octet-stream", headers={
-        "Content-Length": str(size),
+    status = 206 if start > 0 else 200
+    headers = {
+        "Content-Length": str(length),
         "Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}",
+        "Accept-Ranges": "bytes",
         "Cache-Control": "no-store",
-    })
+    }
+    if start > 0:
+        headers["Content-Range"] = f"bytes {start}-{size - 1}/{size}"
+    return StreamingResponse(generate(), status_code=status, media_type="application/octet-stream", headers=headers)
 
 
 @router.get("/tree")

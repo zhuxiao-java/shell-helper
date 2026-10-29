@@ -36,7 +36,7 @@ export class BackendManager {
     if (app.isPackaged) {
       const exeName = process.platform === 'win32' ? 'shell-helper-backend.exe' : 'shell-helper-backend'
       const exe = path.join(process.resourcesPath, 'backend', exeName)
-      return { command: exe, args: ['--port', '0', '--token', this.token], cwd: path.dirname(exe) }
+      return { command: exe, args: ['--port', '0', '--token', this.token, '--data-dir', app.getPath('userData')], cwd: path.dirname(exe) }
     }
     // 开发态: backend 目录相对本文件位于 monorepo 根
     const backendDir = path.resolve(app.getAppPath(), '../../backend')
@@ -48,7 +48,7 @@ export class BackendManager {
     const python = existsSync(venvPython) ? venvPython : process.env.PYTHON || 'python3'
     return {
       command: python,
-      args: ['-m', 'app.main', '--port', '0', '--token', this.token],
+      args: ['-m', 'app.main', '--port', '0', '--token', this.token, '--data-dir', app.getPath('userData')],
       cwd: backendDir
     }
   }

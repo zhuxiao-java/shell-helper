@@ -1,6 +1,6 @@
 export const ACTIONS = {
   newConnection: '新建连接', searchConnections: '搜索连接', toggleSidebar: '切换侧栏',
-  goHome: '返回起始页', closeTab: '关闭当前标签', previousTab: '前一个标签',
+  goHome: '返回工作台', closeTab: '关闭当前标签', previousTab: '前一个标签',
   nextTab: '后一个标签', refreshFiles: '刷新文件目录', openFile: '外部打开选中文件',
   openSettings: '打开设置'
 } as const
@@ -26,12 +26,19 @@ export interface Settings {
 export interface SettingsResult { settings: Settings; warning?: string }
 export type StorageLocationId = 'drafts' | 'database' | 'settings' | 'logs'
 export interface StorageLocation { id: StorageLocationId; path: string | null; unavailable?: string }
-export interface StorageLocations { locations: StorageLocation[]; warning?: string }
+export interface StorageLocations { locations: StorageLocation[]; root: string; warning?: string }
 
 export function defaults(): Settings {
   const bindings = Object.fromEntries(Object.keys(ACTIONS).map(id => [id, { shortcut: '', enabled: true }])) as Settings['bindings']
   bindings.newConnection.shortcut = 'Mod+N'
+  bindings.searchConnections.shortcut = 'Mod+F'
   bindings.toggleSidebar.shortcut = 'Mod+B'
+  bindings.goHome.shortcut = 'Mod+Shift+H'
+  bindings.closeTab.shortcut = 'Mod+W'
+  bindings.previousTab.shortcut = 'Mod+Alt+ArrowLeft'
+  bindings.nextTab.shortcut = 'Mod+Alt+ArrowRight'
+  bindings.refreshFiles.shortcut = 'Mod+Shift+R'
+  bindings.openFile.shortcut = 'Mod+Shift+O'
   bindings.openSettings.shortcut = 'Mod+,'
   return {
     version: 1, bindings, commands: [], editor: { mode: 'default', path: '' }, appearance: 'light',
@@ -117,5 +124,10 @@ export function terminalControl(event: KeyInput): boolean {
   return event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey
 }
 export function displayShortcut(shortcut: string, mac: boolean): string {
-  return shortcut.replace('Mod', mac ? '⌘' : 'Ctrl').replace('Alt', mac ? '⌥' : 'Alt')
+  if (!shortcut) return ''
+  const labels: Record<string, string> = {
+    Mod: mac ? '⌘' : 'Ctrl', Ctrl: mac ? '⌃' : 'Ctrl', Alt: mac ? '⌥' : 'Alt', Shift: mac ? '⇧' : 'Shift',
+    ArrowLeft: '←', ArrowRight: '→', ArrowUp: '↑', ArrowDown: '↓', Space: 'Space'
+  }
+  return shortcut.split('+').map(part => labels[part] ?? part).join(mac ? '' : '+')
 }

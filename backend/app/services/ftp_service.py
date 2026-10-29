@@ -256,13 +256,15 @@ class FtpProvider(FileProvider):
             raise ContentError(413, "文件超过 8 GiB 上限")
         return entry.size
 
-    def iter_bytes(self, path: str):
+    def iter_bytes(self, path: str, start: int = 0):
         def generate():
             with self.lock:
                 if self.closed:
                     raise ContentError(410, "文件会话已断开，请重新连接")
                 check_path(path)
                 self.regular_file_size(path)
+                if start > 0:
+                    self._ftp.sendcmd(f"REST {start}")
                 conn = self._ftp.transfercmd(f"RETR {path}")
                 try:
                     while True:
@@ -274,6 +276,10 @@ class FtpProvider(FileProvider):
                     conn.close()
                     try:
                         self._ftp.voidresp()
+                    except Exception:
+                        pass
+                    try:
+                        self._ftp.sendcmd("REST 0")
                     except Exception:
                         pass
         return generate()

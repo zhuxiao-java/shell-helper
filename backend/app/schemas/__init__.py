@@ -93,5 +93,25 @@ class FileListOut(BaseModel):
     entries: list[FileEntry]
 
 
+class TunnelInput(BaseModel):
+    host_id: str
+    name: str = Field(default="本地转发", min_length=1, max_length=200)
+    local_port: int = Field(default=8080, ge=0, le=65535)
+    remote_host: str = Field(default="127.0.0.1", min_length=1, max_length=255)
+    remote_port: int = Field(default=80, ge=1, le=65535)
+
+
+class TunnelOut(BaseModel):
+    id: str
+    host_id: str
+    name: str
+    local_port: int
+    remote_host: str
+    remote_port: int
+    status: str = "stopped"
+    bound_port: int | None = None
+    error: str = ""
+
+
 class ErrorResponse(BaseModel):
     detail: str

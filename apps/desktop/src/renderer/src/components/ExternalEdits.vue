@@ -11,13 +11,18 @@ async function openDrafts(): Promise<void> {
 </script>
 
 <template>
+  <aside v-if="store.conflict && !blocked && !store.visible && !store.confirming" class="edit-prompt is-conflict" role="alert">
+    <div><strong>远程文件已被其他人修改</strong><p>{{ store.conflict.hostName }} · {{ store.conflict.remotePath }}<br />本地修改仍保留。可查看详情，或用远程版本覆盖本地副本。</p></div>
+    <el-button size="small" @click="store.visible = true">查看</el-button>
+    <el-button size="small" type="warning" plain @click="store.reload(store.conflict.id)">用远程覆盖本地</el-button>
+  </aside>
   <aside v-if="store.prompt && !blocked && !store.visible && !store.confirming" class="edit-prompt" role="status">
     <div><strong>检测到文本修改</strong><p>{{ store.prompt.hostName }} · {{ store.prompt.remotePath }}</p></div>
     <el-button size="small" @click="store.defer(store.prompt)">稍后处理</el-button>
     <el-button size="small" type="primary" @click="store.upload(store.prompt)">回传远程</el-button>
   </aside>
   <el-dialog v-model="store.visible" title="外部编辑与草稿" width="800px" top="8vh" :close-on-click-modal="false">
-    <p class="edit-note">修改仅在确认后回传。断开后保留草稿；重新连接并打开同一远程文件可恢复回传，远程冲突不会自动覆盖。</p>
+    <p class="edit-note">修改仅在确认后回传。连接正常时约每 3 秒检查一次远程更新：如果远程文件被其他人修改，干净的本地副本会自动同步；如果本地有未回传修改，会保留本地内容并标记远程冲突，可用远程版本覆盖本地。</p>
     <el-empty v-if="!store.items.length" description="双击远程文本文件，使用外部编辑器打开" />
     <article v-for="item in store.items" :key="item.id" class="edit-card">
       <div class="edit-heading"><strong>{{ item.remotePath.split('/').pop() }}</strong><el-tag :type="item.dirty ? 'warning' : 'info'" size="small">{{ EDIT_STATUS[item.status] }}{{ item.dirty && item.status !== 'pending' ? ' · 有本地修改' : '' }}</el-tag></div>
@@ -26,6 +31,7 @@ async function openDrafts(): Promise<void> {
       <div class="edit-actions">
         <el-button size="small" @click="store.reopen(item.id)">打开本地副本</el-button>
         <el-button size="small" text @click="store.reopen(item.id, true)">使用默认应用</el-button>
+        <el-button v-if="item.status === 'conflict'" size="small" type="warning" plain @click="store.reload(item.id)">用远程覆盖本地</el-button>
         <span></span>
         <el-button v-if="item.dirty" size="small" text @click="store.defer(item)">稍后处理</el-button>
         <el-button type="primary" size="small" :disabled="!item.dirty || !item.sessionId || item.status === 'conflict' || store.confirming" :loading="item.status === 'uploading'" @click="store.upload(item)">回传远程</el-button>
@@ -45,4 +51,6 @@ async function openDrafts(): Promise<void> {
 .edit-card .edit-message { color: var(--sh-warning-text); }
 .edit-prompt { z-index: 5; display: flex; align-items: center; gap: 10px; margin: 0 10px; padding: 10px 14px; border: 1px solid var(--sh-accent-border); border-radius: 10px 10px 0 0; background: var(--sh-bg-panel); font-size: 13px; }
 .edit-prompt p { max-width: 420px; margin: 4px 0 0; font-size: 12px; color: var(--sh-text-secondary); overflow-wrap: anywhere; }
+.edit-prompt.is-conflict { border-color: var(--sh-warning); background: var(--sh-warning-bg); color: var(--sh-warning-text); }
+.edit-prompt.is-conflict p { color: var(--sh-warning-text); }
 </style>
