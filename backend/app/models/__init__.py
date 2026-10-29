@@ -69,3 +69,15 @@ class KnownHost(Base):
     public_key: Mapped[str] = mapped_column(Text, default="")
     fingerprint: Mapped[str] = mapped_column(String(200), default="")
     added_at: Mapped[datetime] = mapped_column(default=_now)
+
+
+class TunnelRule(Base):
+    __tablename__ = "tunnel_rules"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    host_id: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(200), default="本地转发")
+    local_port: Mapped[int] = mapped_column(default=0)
+    remote_host: Mapped[str] = mapped_column(String(255), default="127.0.0.1")
+    remote_port: Mapped[int] = mapped_column(default=80)
+    created_at: Mapped[datetime] = mapped_column(default=_now)

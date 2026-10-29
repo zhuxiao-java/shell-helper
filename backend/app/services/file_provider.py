@@ -88,7 +88,7 @@ class FileProvider:
         self.closed = False
 
     def __init_subclass__(cls):
-        for name in ("list", "mkdir", "create_file", "file_exists", "regular_file_size", "rename", "remove", "is_dir", "read_content", "write_content", "read_bytes", "write_bytes", "close"):
+        for name in ("list", "stat", "mkdir", "create_file", "file_exists", "regular_file_size", "rename", "remove", "is_dir", "read_content", "write_content", "read_bytes", "write_bytes", "close"):
             if name in cls.__dict__:
                 setattr(cls, name, serialized(cls.__dict__[name]))
 
@@ -116,6 +116,14 @@ class FileProvider:
 
     def list(self, path: str) -> list[FileStat]:
         raise NotImplementedError
+
+    def stat(self, path: str) -> FileStat:
+        """默认通过父目录列表获取 stat；支持 lstat 的 Provider 可覆写。"""
+        parent, name = posixpath.split(path)
+        entry = next((s for s in self.list(parent or ".") if s.name == name), None)
+        if entry is None:
+            raise ContentError(404, "远程文件不存在")
+        return entry
 
     def file_exists(self, path: str) -> bool:
         raise NotImplementedError
@@ -155,6 +163,17 @@ class SftpProvider(FileProvider):
         if (attr.st_size or 0) > MAX_CONTENT_BYTES:
             raise ContentError(413, "文件超过 10 MiB 上限")
         return attr
+
+    def stat(self, path: str) -> FileStat:
+        attr = self._sftp.lstat(path)
+        mode = attr.st_mode or 0
+        return FileStat(
+            name=posixpath.basename(path),
+            is_dir=statmod.S_ISDIR(mode),
+            size=int(attr.st_size or 0),
+            mtime=float(getattr(attr, 'st_mtime', 0) or 0),
+            mode=statmod.filemode(mode),
+        )
 
     def read_content(self, path: str) -> bytes:
         self._regular(path)
@@ -247,7 +266,7 @@ class SftpProvider(FileProvider):
             raise ContentError(413, "文件超过 8 GiB 上限")
         return size
 
-    def iter_bytes(self, path: str):
+    def iter_bytes(self, path: str, start: int = 0):
         """分块读取。锁会保持到迭代结束，避免同一条 SFTP 连接并发读写。"""
         def generate():
             with self.lock:
@@ -256,6 +275,8 @@ class SftpProvider(FileProvider):
                 check_path(path)
                 self.regular_file_size(path)
                 with self._sftp.open(path, "rb") as stream:
+                    if start > 0:
+                        stream.seek(start)
                     while True:
                         block = stream.read(65536)
                         if not block:
@@ -316,7 +337,7 @@ class SftpProvider(FileProvider):
                     name=attr.filename,
                     is_dir=statmod.S_ISDIR(m),
                     size=attr.st_size or 0,
-                    mtime=float(attr.st_mtime or 0),
+                    mtime=float(getattr(attr, 'st_mtime', 0) or 0),
                     mode=statmod.filemode(m),
                 )
             )

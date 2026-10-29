@@ -31,7 +31,8 @@ async function verify(win) {
     for (let i = 0; i < 150; i++) { if (await evaluate(script)) return; await sleep(60) }
     throw new Error(`未满足：${label}`)
   }
-  await waitFor(`document.querySelector('.sh-app') && document.body.textContent.includes('服务就绪')`, '正式后端和界面就绪')
+  await waitFor(`document.querySelector('.sh-app') && document.body.textContent.includes('已就绪')`, '正式后端和界面就绪')
+  await waitFor(`!document.querySelector('.startup-screen')`, '启动界面结束')
   assert.equal(win.isVisible(), true)
   const locations = await evaluate(`window.shellHelper.readStorageLocations()`)
   assert.equal(locations.warning, undefined)
@@ -41,7 +42,7 @@ async function verify(win) {
   assert.equal(locations.locations.find(item => item.id === 'drafts').path, path.join(root, 'drafts'))
   assert.equal(locations.locations.find(item => item.id === 'settings').path, path.join(root, 'settings.json'))
   win.focus()
-  await evaluate(`document.querySelector('.header-new[title]')?.blur(); [...document.querySelectorAll('button')].find(e => e.textContent.trim() === '新建连接').click()`)
+  await evaluate(`document.querySelector('.header-new[title]')?.blur(); document.querySelector('.panel-new').click()`)
   await waitFor(`!!document.querySelector('.hf-form input')`, '连接表单')
   await sleep(400)
   const focus = async selector => {
@@ -75,7 +76,7 @@ async function verify(win) {
     assert.ok(style.shadow.includes(colors.accent), `${theme}：外框仍显示焦点`)
     assert.ok(style.height >= 24 && style.wrapperHeight >= style.height)
     assert.equal(style.background, 'rgb(255, 255, 255)')
-    assert.equal(style.radius, '7px')
+    assert.equal(style.radius, '8px')
     await evaluate(`document.querySelector('.hf-name input').select()`)
     await win.webContents.insertText('测试主机 Web-01')
     await evaluate(`document.querySelector('.hf-name input').setSelectionRange(0, 4)`)
@@ -171,7 +172,7 @@ async function verifyLocalTerminal(win, evaluate, waitFor) {
     win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Return' })
     win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Return' })
   }
-  await evaluate(`document.querySelector('.quick-action.local').click()`)
+  await evaluate(`document.querySelector('.composer-local').click()`)
   await waitFor(`document.querySelector('.terminal-host[data-session-id] textarea') && document.querySelector('[aria-label="终端命令"]')`, '首页打开真实本地终端')
   const first = await evaluate(`document.querySelector('.terminal-host').dataset.sessionId`)
   await command(first, "SH_LOCAL_MARK=first; printf '\\nLOCAL_%s\\n' '中文就绪'; pwd")

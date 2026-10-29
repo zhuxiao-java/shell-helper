@@ -8,16 +8,23 @@ import { useSessionStore } from '@renderer/stores/session'
 import { useHostStore } from '@renderer/stores/host'
 import { useExternalStore } from '@renderer/stores/external'
 import { useSettingsStore } from '@renderer/stores/settings'
+import { useLanStore } from '@renderer/stores/lan'
+import { useTransfersStore } from '@renderer/stores/transfers'
+import LocalPane from './LocalPane.vue'
 import { fileBridges, sessionMeta, terminalBridges } from '@renderer/utils/workspace'
 import { isTerminalProto } from '@renderer/api/types'
 import { EDIT_STATUS, MAX_FILE_BYTES } from '../../../shared/external'
+import type { LanFileAction } from '../../../shared/lan'
 
 const props = defineProps<{ tab: Tab; visible: boolean }>()
 const sessionStore = useSessionStore()
 const external = useExternalStore()
 const settings = useSettingsStore()
+const lan = useLanStore()
+const transfers = useTransfersStore()
 const hosts = useHostStore()
 const selected = ref<FileEntry | null>(null)
+const rowMenu = ref<{ x: number; y: number; row: FileEntry } | null>(null)
 const opening = ref(false)
 const editState = computed(() => external.items.find(item => item.hostId === props.tab.hostId && item.remotePath === selected.value?.path))
 fileBridges.set(props.tab.id, {
@@ -28,7 +35,7 @@ fileBridges.set(props.tab.id, {
     else ElMessage.info('请先选择普通文本文件')
   }
 })
-onBeforeUnmount(() => { fileBridges.delete(props.tab.id); delete sessionMeta.path[props.tab.id]; stopProgress?.(); requestId++ })
+onBeforeUnmount(() => { fileBridges.delete(props.tab.id); delete sessionMeta.path[props.tab.id]; stopProgress?.(); stopTreeResize?.(); window.removeEventListener('resize', scrollMillerToCurrent); window.removeEventListener('click', closeRowMenu); window.removeEventListener('blur', closeRowMenu); requestId++ })
 
 const cwd = ref('/')
 const entries = ref<FileEntry[]>([])
@@ -46,11 +53,196 @@ const transferring = ref(false)
 const dragActive = ref(false)
 const followTerminal = ref(false)
 const picked = ref<string[]>([])
-const transfer = ref<{ id: string; label: string; loaded: number; total: number } | null>(null)
+type TransferDirection = 'upload' | 'download'
+interface TransferHistory {
+  id: string
+  label: string
+  total: number
+  direction: TransferDirection
+  status: 'done' | 'error'
+  error?: string
+  startedAt: number
+}
+const transfer = ref<{ id: string; label: string; loaded: number; total: number; direction: TransferDirection } | null>(null)
+const recentTransfers = ref<TransferHistory[]>([])
+const transferDrawer = ref(false)
 let stopProgress: (() => void) | undefined
 const showTree = ref(true)
+const localPaneOpen = ref(false)
 const tree = ref<TreeInstance>()
+const rootEl = ref<HTMLElement>()
 const treeVersion = ref(0)
+const expandedTreePaths = ref<string[]>([])
+const TREE_WIDTH_KEY = 'shell-helper-tree-width'
+const TREE_WIDTH_DEFAULT = 210
+const TREE_WIDTH_MIN = 170
+const TREE_WIDTH_MAX = 360
+const treeWidth = ref(TREE_WIDTH_DEFAULT)
+let stopTreeResize: (() => void) | undefined
+const VIEW_MODE_KEY = 'shell-helper-file-view'
+type ViewMode = 'list' | 'columns'
+const viewMode = ref<ViewMode>('list')
+const millerColumns = ref<MillerColumn[]>([])
+const millerScroll = ref<HTMLElement>()
+let millerRequest = 0
+interface MillerColumn { path: string; entries: FileEntry[]; loading: boolean; error: string }
+function clampTreeWidth(value: number): number {
+  return Math.min(TREE_WIDTH_MAX, Math.max(TREE_WIDTH_MIN, value))
+}
+function loadTreeWidth(): void {
+  try {
+    const stored = Number(localStorage.getItem(TREE_WIDTH_KEY))
+    if (stored >= TREE_WIDTH_MIN && stored <= TREE_WIDTH_MAX) treeWidth.value = stored
+  } catch { /* 忽略读取异常 */ }
+}
+function saveTreeWidth(): void {
+  try { localStorage.setItem(TREE_WIDTH_KEY, String(Math.round(treeWidth.value))) } catch { /* 忽略写入异常 */ }
+}
+function resetTreeWidth(): void {
+  treeWidth.value = TREE_WIDTH_DEFAULT
+  saveTreeWidth()
+}
+function startTreeResize(event: MouseEvent): void {
+  event.preventDefault()
+  stopTreeResize?.()
+  const startX = event.clientX
+  const startWidth = treeWidth.value
+  const previousCursor = document.body.style.cursor
+  const previousSelect = document.body.style.userSelect
+  document.body.style.cursor = 'col-resize'
+  document.body.style.userSelect = 'none'
+  const onMove = (move: MouseEvent): void => {
+    treeWidth.value = clampTreeWidth(startWidth + move.clientX - startX)
+  }
+  const onUp = (): void => {
+    document.body.style.cursor = previousCursor
+    document.body.style.userSelect = previousSelect
+    window.removeEventListener('mousemove', onMove)
+    window.removeEventListener('mouseup', onUp)
+    stopTreeResize = undefined
+    saveTreeWidth()
+  }
+  stopTreeResize = onUp
+  window.addEventListener('mousemove', onMove)
+  window.addEventListener('mouseup', onUp)
+}
+
+interface FavoriteFolder { name: string; path: string }
+const favorites = ref<FavoriteFolder[]>([])
+const favoriteKey = computed(() => `shell-helper-tree-favorites:${props.tab.hostId || 'local'}`)
+function favoriteName(path: string): string {
+  return path === '/' ? '根目录' : path.split('/').filter(Boolean).at(-1) || path
+}
+function loadFavorites(): void {
+  try {
+    const raw = JSON.parse(localStorage.getItem(favoriteKey.value) || '[]')
+    favorites.value = Array.isArray(raw)
+      ? raw.filter((item): item is FavoriteFolder => !!item && typeof item.path === 'string' && item.path.startsWith('/')).slice(0, 6)
+      : []
+  } catch { favorites.value = [] }
+}
+function saveFavorites(): void {
+  try { localStorage.setItem(favoriteKey.value, JSON.stringify(favorites.value)) } catch { /* 忽略写入异常 */ }
+}
+function isFavorite(path: string): boolean {
+  return favorites.value.some(item => item.path === path)
+}
+function toggleFavorite(): void {
+  if (!loaded.value) return
+  if (isFavorite(cwd.value)) favorites.value = favorites.value.filter(item => item.path !== cwd.value)
+  else favorites.value = [{ name: favoriteName(cwd.value), path: cwd.value }, ...favorites.value].slice(0, 6)
+  saveFavorites()
+}
+function removeFavorite(path: string): void {
+  favorites.value = favorites.value.filter(item => item.path !== path)
+  saveFavorites()
+}
+function openFavorite(path: string): void {
+  if (path !== cwd.value) void load(path)
+}
+
+
+function loadViewMode(): void {
+  try {
+    const stored = localStorage.getItem(VIEW_MODE_KEY)
+    if (stored === 'columns' || stored === 'list') viewMode.value = stored
+  } catch { /* 忽略读取异常 */ }
+}
+function saveViewMode(): void {
+  try { localStorage.setItem(VIEW_MODE_KEY, viewMode.value) } catch { /* 忽略写入异常 */ }
+}
+function millerLabel(path: string): string {
+  return path === '/' ? '根目录' : path.split('/').filter(Boolean).at(-1) || path
+}
+function millerActive(column: MillerColumn, entry: FileEntry): boolean {
+  if (entry.path === selected.value?.path) return true
+  return column.path !== cwd.value && (cwd.value === entry.path || cwd.value.startsWith(entry.path + '/'))
+}
+async function buildMillerColumns(path = cwd.value, currentEntries?: FileEntry[]): Promise<void> {
+  if (viewMode.value !== 'columns') return
+  const request = ++millerRequest
+  const segments = path.split('/').filter(Boolean)
+  const paths = ['/', ...segments.map((_, index) => `/${segments.slice(0, index + 1).join('/')}`)]
+  millerColumns.value = paths.map(columnPath => ({ path: columnPath, entries: [], loading: true, error: '' }))
+  await nextTick()
+  for (let index = 0; index < paths.length; index++) {
+    if (request !== millerRequest || viewMode.value !== 'columns') return
+    const columnPath = paths[index]
+    const column = millerColumns.value[index]
+    if (!column) return
+    try {
+      const list = columnPath === path && currentEntries ? currentEntries : await readDirectory(columnPath)
+      if (request !== millerRequest || viewMode.value !== 'columns') return
+      column.entries = sortedEntries(list)
+    } catch (error) {
+      if (request !== millerRequest) return
+      column.error = (error as Error).message || '无法读取目录'
+    } finally {
+      if (request === millerRequest) column.loading = false
+    }
+  }
+  await nextTick()
+  scrollMillerToCurrent()
+}
+
+function scrollMillerToCurrent(): void {
+  const scroller = millerScroll.value
+  if (scroller) scroller.scrollTo({ left: scroller.scrollWidth, behavior: 'smooth' })
+}
+function setView(mode: ViewMode): void {
+  if (viewMode.value === mode) return
+  viewMode.value = mode
+  saveViewMode()
+  millerRequest++
+  if (mode === 'columns') {
+    picked.value = []
+    query.value = ''
+    void nextTick().then(() => { if (loaded.value) void buildMillerColumns(cwd.value, entries.value) })
+  }
+}
+function onMillerClick(column: MillerColumn, entry: FileEntry): void {
+  if (entry.is_dir) {
+    if (entry.path !== cwd.value) void load(entry.path)
+    return
+  }
+  selected.value = entry
+}
+function onMillerDouble(entry: FileEntry): void {
+  if (!entry.is_dir) void open(entry)
+}
+function onMillerKey(event: KeyboardEvent, column: MillerColumn, entry: FileEntry): void {
+  if (event.key !== 'Enter') return
+  event.preventDefault()
+  if (entry.is_dir) onMillerClick(column, entry)
+  else void open(entry)
+}
+
+function onTreeResizeKey(event: KeyboardEvent): void {
+  if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+  event.preventDefault()
+  treeWidth.value = clampTreeWidth(treeWidth.value + (event.key === 'ArrowRight' ? 12 : -12))
+  saveTreeWidth()
+}
 const pathEditing = ref(false)
 const pathInput = ref('')
 const addressInput = ref<HTMLInputElement>()
@@ -59,15 +251,25 @@ let requestId = 0
 interface FolderNode { name: string; path: string }
 const breadcrumbs = computed(() => cwd.value.split('/').filter(Boolean).map((name, index, all) => ({ name, path: '/' + all.slice(0, index + 1).join('/') })))
 const folderName = computed(() => breadcrumbs.value.at(-1)?.name || '根目录')
-const expandedPaths = computed(() => ['/', ...breadcrumbs.value.map(segment => segment.path)])
+const expandedPaths = computed(() => [...new Set(['/', ...breadcrumbs.value.map(segment => segment.path), ...expandedTreePaths.value])])
 const host = computed(() => hosts.byId(props.tab.hostId))
-const visibleEntries = computed(() => entries.value.filter(e => e.name.toLocaleLowerCase().includes(query.value.toLocaleLowerCase())).slice().sort((a, b) => {
-  const directory = Number(b.is_dir) - Number(a.is_dir)
-  if (directory) return directory
-  if (sortKey.value === 'size') return (a.size - b.size) * sortDir.value
-  if (sortKey.value === 'mtime') return (a.mtime - b.mtime) * sortDir.value
-  return a.name.localeCompare(b.name, undefined, { numeric: true }) * sortDir.value
-}))
+function toggleLocalPane(): void {
+  localPaneOpen.value = !localPaneOpen.value
+}
+
+function notifyLan(path: string, action: LanFileAction): void {
+  void lan.notifyFile({ hostName: host.value?.name || props.tab.title, path, action })
+}
+function sortedEntries(list: FileEntry[]): FileEntry[] {
+  return list.slice().sort((a, b) => {
+    const directory = Number(b.is_dir) - Number(a.is_dir)
+    if (directory) return directory
+    if (sortKey.value === 'size') return (a.size - b.size) * sortDir.value
+    if (sortKey.value === 'mtime') return (a.mtime - b.mtime) * sortDir.value
+    return a.name.localeCompare(b.name, undefined, { numeric: true }) * sortDir.value
+  })
+}
+const visibleEntries = computed(() => sortedEntries(entries.value.filter(e => e.name.toLocaleLowerCase().includes(query.value.toLocaleLowerCase()))))
 const linkState = computed(() => props.tab.connecting ? 'pending' : (!props.tab.session || props.tab.session.status === 'closed' || props.tab.error ? 'off' : 'ok'))
 const linkedTerminal = computed(() => sessionStore.tabs.find(tab => tab.kind === 'terminal' && tab.hostId === props.tab.hostId))
 const shellPath = computed(() => linkedTerminal.value ? sessionMeta.shellPath[linkedTerminal.value.id] || '' : '')
@@ -77,12 +279,26 @@ const transferLabel = computed(() => {
   if (!job.total) return `${job.label} ${fmtSize(job.loaded)}`
   return `${job.label} ${Math.min(100, Math.round(job.loaded / job.total * 100))}%`
 })
+const transferPercent = computed(() => {
+  const job = transfer.value
+  if (!job || !job.total) return 0
+  return Math.min(100, Math.round(job.loaded / job.total * 100))
+})
+const pickedEntries = computed(() => visibleEntries.value.filter(e => picked.value.includes(e.path)))
+const pickedCount = computed(() => pickedEntries.value.length)
 function toggleSort(key: 'name' | 'mtime' | 'size'): void {
   if (sortKey.value === key) sortDir.value = sortDir.value === 1 ? -1 : 1
   else { sortKey.value = key; sortDir.value = 1 }
 }
+function ariaSort(key: 'name' | 'mtime' | 'size'): 'ascending' | 'descending' | 'none' {
+  if (sortKey.value !== key) return 'none'
+  return sortDir.value === 1 ? 'ascending' : 'descending'
+}
 const folders = computed(() => entries.value.filter(e => e.is_dir).length)
-watch(visibleEntries, list => { if (selected.value && !list.some(e => e.path === selected.value?.path)) selected.value = null })
+watch(visibleEntries, list => {
+  if (selected.value && !list.some(e => e.path === selected.value?.path)) selected.value = null
+  picked.value = picked.value.filter(path => list.some(e => e.path === path))
+})
 // 首次加载标记:避免空目录时 watch 重复触发 load
 let initialized = false
 
@@ -156,6 +372,7 @@ async function load(path = cwd.value): Promise<void> {
     loaded.value = true
     await nextTick()
     tree.value?.setCurrentKey(path)
+    if (viewMode.value === 'columns') void buildMillerColumns(path, result)
   } catch (err) {
     if (current !== requestId) return
     loadError.value = (err as Error).message || '未知错误'
@@ -165,6 +382,33 @@ async function load(path = cwd.value): Promise<void> {
     }
   } finally {
     if (current === requestId) loading.value = false
+  }
+}
+
+function rememberExpanded(path: string): void {
+  if (!path || expandedTreePaths.value.includes(path)) return
+  expandedTreePaths.value = [...expandedTreePaths.value, path]
+}
+
+function forgetExpanded(path: string): void {
+  if (!path) return
+  expandedTreePaths.value = expandedTreePaths.value.filter(item => item !== path)
+}
+
+function collapseTree(): void {
+  // 保留当前目录的祖先展开态，只收起其余分支
+  expandedTreePaths.value = []
+  treeVersion.value++
+}
+
+async function revealCurrent(): Promise<void> {
+  if (!loaded.value) return
+  treeVersion.value++
+  await nextTick()
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const node = rootEl.value?.querySelector<HTMLElement>('.directory-tree .el-tree-node.is-current > .el-tree-node__content')
+    if (node) { node.scrollIntoView({ block: 'nearest' }); return }
+    await new Promise(resolve => setTimeout(resolve, 60))
   }
 }
 
@@ -245,8 +489,10 @@ async function onNewDir(): Promise<void> {
   const sid = props.tab.session?.session_id
   if (!sid) return
   const { value } = await ElMessageBox.prompt('目录名称', '新建目录', { inputPattern: /\S+/ })
-  await fileApi.mkdir(sid, join(cwd.value, value))
+  const path = join(cwd.value, value)
+  await fileApi.mkdir(sid, path)
   ElMessage.success('已创建')
+  notifyLan(path, 'created')
   await refresh()
 }
 
@@ -257,6 +503,7 @@ async function onNewFile(): Promise<void> {
    const newPath = join(cwd.value, value)
    await fileApi.createFile(sid, newPath)
    ElMessage.success('已创建')
+   notifyLan(newPath, 'created')
    await refresh()
    const created = entries.value.find(e => e.path === newPath && !e.is_dir)
    if (created) await open(created)
@@ -268,7 +515,33 @@ async function onDelete(entry: FileEntry): Promise<void> {
   await ElMessageBox.confirm(`确认删除「${entry.name}」？`, '删除确认', { type: 'warning' })
   await fileApi.remove(sid, entry.path)
   ElMessage.success('已删除')
+  notifyLan(entry.path, 'deleted')
   await refresh()
+}
+
+function clearPicked(): void {
+  picked.value = []
+  selected.value = null
+}
+
+async function deletePicked(): Promise<void> {
+  const sid = props.tab.session?.session_id
+  const rows = pickedEntries.value
+  if (!sid || !rows.length) return
+  try {
+    await ElMessageBox.confirm(
+      `确认删除选中的 ${rows.length} 项？文件夹会连同内部内容一起删除。`,
+      '删除确认',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' }
+    )
+    for (const row of rows) await fileApi.remove(sid, row.path)
+    for (const row of rows) notifyLan(row.path, 'deleted')
+    ElMessage.success(`已删除 ${rows.length} 项`)
+    clearPicked()
+    await refresh()
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') ElMessage.error((error as Error).message || '删除失败')
+  }
 }
 
 async function onRename(entry: FileEntry): Promise<void> {
@@ -278,8 +551,10 @@ async function onRename(entry: FileEntry): Promise<void> {
     inputValue: entry.name,
     inputPattern: /\S+/
   })
-  await fileApi.rename(sid, entry.path, join(cwd.value, value))
+  const newPath = join(cwd.value, value)
+  await fileApi.rename(sid, entry.path, newPath)
   ElMessage.success('已重命名')
+  notifyLan(newPath, 'renamed')
   await refresh()
 }
 
@@ -294,8 +569,37 @@ async function onRowCommand(cmd: string, row: FileEntry): Promise<void> {
   }
 }
 
+function openRowMenu(event: MouseEvent, row: FileEntry): void {
+  selected.value = row
+  const width = 168
+  const height = 202
+  rowMenu.value = {
+    x: Math.max(8, Math.min(event.clientX, window.innerWidth - width - 8)),
+    y: Math.max(8, Math.min(event.clientY, window.innerHeight - height - 8)),
+    row
+  }
+}
+function closeRowMenu(): void {
+  rowMenu.value = null
+}
+async function runRowMenuCommand(command: string): Promise<void> {
+  const row = rowMenu.value?.row
+  rowMenu.value = null
+  if (!row) return
+  if (command === 'copy-path') {
+    try { await window.shellHelper.copyText(row.path); ElMessage.success('路径已复制') }
+    catch (error) { ElMessage.error((error as Error).message || '复制失败') }
+    return
+  }
+  await onRowCommand(command, row)
+}
+
 function localPathOf(file: File): string {
-  return (file as File & { path?: string }).path || ''
+  try {
+    return window.shellHelper.getPathForFile(file)
+  } catch {
+    return ''
+  }
 }
 
 function chooseRow(event: MouseEvent, row: FileEntry, index: number): void {
@@ -310,12 +614,65 @@ function chooseRow(event: MouseEvent, row: FileEntry, index: number): void {
   selected.value = row
 }
 
-async function runTransfer(label: string, work: (id: string) => Promise<void>): Promise<void> {
+async function uploadLocalEntries(files: { name: string; path: string; is_dir: boolean }[]): Promise<void> {
+  const sid = props.tab.session?.session_id
+  const selectedFiles = files.filter(file => !file.is_dir)
+  if (!sid || !selectedFiles.length) { ElMessage.info('请选择普通文件；目录同步暂支持逐级打开'); return }
+  try {
+    await runTransfer(selectedFiles[0].name, async (id) => {
+      for (const file of selectedFiles) {
+        await uploadOne(id, cwd.value, file.path, file.name, false)
+        notifyLan(join(cwd.value, file.name), 'modified')
+      }
+    }, 'upload')
+    ElMessage.success(`已上传 ${selectedFiles.length} 个文件`)
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') ElMessage.error((error as Error).message || '上传失败')
+  }
+}
+
+async function downloadLocalEntries(entriesToDownload: FileEntry[], localDirectory: string): Promise<void> {
+  const sid = props.tab.session?.session_id
+  const files = entriesToDownload.filter(entry => !entry.is_dir)
+  if (!sid || !localDirectory || !files.length) { ElMessage.info('请选择普通文件并先在本地栏选择目录'); return }
+  try {
+    await runTransfer(files[0].name, async (id) => {
+      for (const file of files) {
+        await window.shellHelper.downloadTo({ id, sessionId: sid, remotePath: file.path, destPath: `${localDirectory.replace(/[\\/]$/, '')}/${file.name}` })
+      }
+    }, 'download')
+    ElMessage.success(`已下载 ${files.length} 个文件到本地栏目录`)
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') ElMessage.error((error as Error).message || '下载失败')
+  }
+}
+
+async function runTransfer(label: string, work: (id: string) => Promise<void>, direction: TransferDirection = 'upload', resume?: { sessionId: string; remotePath: string; destPath: string }): Promise<void> {
+  if (transferring.value) throw new Error('已有传输正在进行，请稍候')
   const id = crypto.randomUUID()
-  transfer.value = { id, label, loaded: 0, total: 0 }
+  const startedAt = Date.now()
+  transfer.value = { id, label, loaded: 0, total: 0, direction }
+  transfers.begin({ id, label, direction, loaded: 0, total: 0, resume })
   transferring.value = true
-  try { await work(id) }
-  finally {
+  try {
+    await work(id)
+    const current = transfer.value
+    recentTransfers.value.unshift({
+      id, label: current?.label || label, total: current?.total || 0,
+      direction, status: 'done', startedAt
+    })
+    transfers.complete(id)
+  } catch (error) {
+    const current = transfer.value
+    const message = (error as Error).message || '传输失败'
+    recentTransfers.value.unshift({
+      id, label: current?.label || label, total: current?.total || 0,
+      direction, status: 'error', error: message, startedAt
+    })
+    transfers.fail(id, message)
+    throw error
+  } finally {
+    recentTransfers.value = recentTransfers.value.slice(0, 8)
     if (transfer.value?.id === id) transfer.value = null
     transferring.value = false
   }
@@ -327,10 +684,12 @@ async function uploadOne(id: string, directory: string, localPath: string, name:
   if (transfer.value) transfer.value.label = name
   try {
     await window.shellHelper.uploadFrom({ id, sessionId: sid, directory, localPath, name, overwrite })
+    notifyLan(join(directory, name), 'modified')
   } catch (error) {
     if (!overwrite && (error as Error).message.includes('远程已有同名文件')) {
       await ElMessageBox.confirm(`「${name}」在远程已存在，是否覆盖？`, '覆盖确认', { type: 'warning', confirmButtonText: '覆盖', cancelButtonText: '跳过' })
       await window.shellHelper.uploadFrom({ id, sessionId: sid, directory, localPath, name, overwrite: true })
+      notifyLan(join(directory, name), 'modified')
       return
     }
     throw error
@@ -358,7 +717,7 @@ async function uploadLocal(files: { localPath: string; directory: string; name: 
         throw error
       }
     }
-  })
+  }, 'upload')
   ElMessage.success(files.length > 1 ? `已上传 ${files.length} 个文件` : '已上传')
   await refresh()
 }
@@ -399,7 +758,7 @@ async function saveEntry(entry: { path: string; relative?: string; name?: string
     ? `${directory.replace(/\/$/, '')}/${entry.relative || name}`
     : await window.shellHelper.chooseSavePath(name)
   if (!dest) return
-  await runTransfer(name, (id) => window.shellHelper.downloadTo({ id, sessionId: sid, remotePath: entry.path, destPath: dest }))
+  await runTransfer(name, (id) => window.shellHelper.downloadTo({ id, sessionId: sid, remotePath: entry.path, destPath: dest }), 'download', { sessionId: sid, remotePath: entry.path, destPath: dest })
 }
 
 async function onDownload(entry?: FileEntry): Promise<void> {
@@ -450,10 +809,19 @@ async function createFolder(): Promise<void> {
 }
 
 watch(cwd, (path) => { sessionMeta.path[props.tab.id] = path })
+watch(() => props.tab.hostId, () => { loadFavorites() })
+watch(() => props.visible, (visible) => { if (!visible) transferDrawer.value = false })
 watch(shellPath, (path) => {
   if (followTerminal.value && path.startsWith('/') && path !== cwd.value && linkState.value === 'ok') void load(path)
 })
 onMounted(() => {
+  loadTreeWidth()
+  loadViewMode()
+  loadFavorites()
+  window.addEventListener('click', closeRowMenu)
+  window.addEventListener('blur', closeRowMenu)
+  if (viewMode.value === 'columns' && loaded.value && !loading.value) void buildMillerColumns(cwd.value, entries.value)
+  window.addEventListener('resize', scrollMillerToCurrent)
   stopProgress = window.shellHelper.onTransferProgress((event) => {
     if (transfer.value?.id === event.id) {
       transfer.value.loaded = event.loaded
@@ -475,6 +843,7 @@ watch(
       loaded.value = false
       entries.value = []
       loadError.value = ''
+      expandedTreePaths.value = []
     }
     if (vis && sessionId && !connecting && !initialized) {
       initialized = true
@@ -486,13 +855,18 @@ watch(
 </script>
 
 <template>
-  <div v-show="visible" class="file-manager">
+  <div v-show="visible" ref="rootEl" class="file-manager">
     <!-- 工具栏 -->
     <div class="fm-toolbar">
       <div class="nav-btns">
-        <button class="fm-icon-button" :class="{ active: showTree }" title="切换目录树" aria-label="切换目录树" :aria-pressed="showTree" @click="showTree = !showTree"><el-icon><Fold /></el-icon></button>
+        <button v-if="viewMode === 'list' && !localPaneOpen" class="fm-icon-button" :class="{ active: showTree }" title="切换目录树" aria-label="切换目录树" :aria-pressed="showTree" @click="showTree = !showTree"><el-icon><Fold /></el-icon></button>
+        <button class="fm-icon-button" :class="{ active: localPaneOpen }" title="本地/远程双栏" aria-label="本地/远程双栏" :aria-pressed="localPaneOpen" @click="toggleLocalPane"><el-icon><Monitor /></el-icon></button>
         <button class="fm-icon-button" title="上一级目录" aria-label="上一级目录" :disabled="cwd === '/' || loading" @click="goUp"><el-icon><Top /></el-icon></button>
         <button class="fm-icon-button" title="刷新目录" aria-label="刷新目录" :disabled="loading" @click="refresh"><el-icon :class="{ 'is-loading': loading }"><Refresh /></el-icon></button>
+        <div class="view-switch" role="group" aria-label="文件视图">
+          <button type="button" :class="{ active: viewMode === 'list' }" title="列表视图" aria-label="列表视图" :aria-pressed="viewMode === 'list'" @click="setView('list')"><el-icon><List /></el-icon></button>
+          <button type="button" :class="{ active: viewMode === 'columns' }" title="分栏视图" aria-label="分栏视图" :aria-pressed="viewMode === 'columns'" @click="setView('columns')"><el-icon><Grid /></el-icon></button>
+        </div>
       </div>
       <div class="path-box" :title="cwd">
         <el-icon class="path-icon"><FolderOpened /></el-icon>
@@ -511,37 +885,81 @@ watch(
     </div>
 
     <div class="fm-workspace">
-      <aside v-show="showTree" class="directory-sidebar" aria-label="远程目录树">
-        <div class="tree-heading">目录 <span>远程</span></div>
-        <el-tree v-if="loaded" :key="treeVersion" ref="tree" class="directory-tree" node-key="path" lazy :load="loadTree" :props="{ label: 'name' }" :default-expanded-keys="expandedPaths" :current-node-key="cwd" :expand-on-click-node="false" highlight-current :indent="14" @node-click="(node: FolderNode) => load(node.path)">
+      <aside v-show="showTree && viewMode === 'list' && !localPaneOpen" class="directory-sidebar" :style="{ width: `${treeWidth}px` }" aria-label="远程目录树">
+        <div class="tree-top">
+          <div class="tree-heading">
+            <span class="tree-title">导航</span>
+            <span class="tree-proto" :class="(tab.session?.type || host?.protocol) === 'ftp' ? 'is-ftp' : 'is-sftp'">{{ (tab.session?.type || host?.protocol || '远程').toUpperCase() }}</span>
+            <div class="tree-tools">
+              <button class="tree-tool" type="button" title="刷新目录树" aria-label="刷新目录树" :disabled="!loaded || loading || linkState !== 'ok'" @click="refresh"><el-icon :class="{ 'is-loading': loading }"><Refresh /></el-icon></button>
+              <button class="tree-tool" type="button" title="收起其他分支" aria-label="收起其他分支" :disabled="!loaded" @click="collapseTree"><el-icon><Fold /></el-icon></button>
+            </div>
+          </div>
+          <div class="tree-path-row">
+            <button class="tree-path" type="button" :title="`定位当前目录：${cwd}`" :disabled="!loaded" @click="revealCurrent">
+              <el-icon><FolderOpened /></el-icon>
+              <span>{{ cwd }}</span>
+              <el-icon class="tree-locate"><Pointer /></el-icon>
+            </button>
+            <button class="tree-fav-toggle" :class="{ active: isFavorite(cwd) }" type="button" :title="isFavorite(cwd) ? '取消收藏当前目录' : '收藏当前目录'" :aria-label="isFavorite(cwd) ? '取消收藏当前目录' : '收藏当前目录'" :aria-pressed="isFavorite(cwd)" :disabled="!loaded" @click="toggleFavorite">
+              <el-icon><StarFilled v-if="isFavorite(cwd)" /><Star v-else /></el-icon>
+            </button>
+          </div>
+          <div v-if="favorites.length" class="tree-favorites">
+            <div class="tree-section-label"><span>收藏</span><span>{{ favorites.length }}</span></div>
+            <div v-for="favorite in favorites" :key="favorite.path" class="tree-favorite">
+              <button class="tree-favorite-main" type="button" :title="favorite.path" @click="openFavorite(favorite.path)">
+                <el-icon><StarFilled /></el-icon><span>{{ favorite.name }}</span>
+              </button>
+              <button class="tree-fav-remove" type="button" :aria-label="`移除收藏 ${favorite.name}`" @click="removeFavorite(favorite.path)"><el-icon><Close /></el-icon></button>
+            </div>
+          </div>
+          <div class="tree-section-label tree-section-directory"><span>全部目录</span></div>
+        </div>
+        <el-tree v-if="loaded" :key="treeVersion" ref="tree" class="directory-tree" node-key="path" lazy :load="loadTree" :props="{ label: 'name' }" :default-expanded-keys="expandedPaths" :current-node-key="cwd" :expand-on-click-node="false" highlight-current :indent="12" @node-click="(node: FolderNode) => load(node.path)" @node-expand="(node: FolderNode) => rememberExpanded(node.path)" @node-collapse="(node: FolderNode) => forgetExpanded(node.path)">
           <template #default="{ node, data }">
-            <span class="tree-label" :title="data.path"><el-icon class="tree-folder"><Folder /></el-icon><span>{{ data.name }}</span></span>
+            <span class="tree-label" :title="data.path">
+              <el-icon class="tree-folder"><FolderOpened v-if="node.expanded" /><Folder v-else /></el-icon>
+              <span>{{ data.name }}</span>
+            </span>
           </template>
         </el-tree>
-        <p v-else class="tree-placeholder">连接后显示目录</p>
+        <div v-else class="tree-placeholder">
+          <el-icon :class="{ 'is-loading': linkState === 'pending' }"><Loading v-if="linkState === 'pending'" /><Connection v-else /></el-icon>
+          <span>{{ loadError ? '目录加载失败，请重试' : linkState === 'pending' ? '正在读取目录…' : '连接后显示目录' }}</span>
+          <button v-if="loadError" class="tree-retry" type="button" @click="load(attemptedPath)">重试</button>
+        </div>
         <div class="tree-host"><el-icon><Connection /></el-icon><span :title="host?.host">{{ host?.host || '远程主机' }}</span><span class="connection-dot" :class="linkState" :title="linkState === 'ok' ? '已连接' : linkState === 'pending' ? '连接中' : '已断开'"></span></div>
       </aside>
+      <div v-if="showTree && viewMode === 'list' && !localPaneOpen" class="tree-resizer" role="separator" aria-orientation="vertical" aria-label="调整目录树宽度" :aria-valuenow="treeWidth" :aria-valuemin="TREE_WIDTH_MIN" :aria-valuemax="TREE_WIDTH_MAX" tabindex="0" title="拖动调整目录树宽度，双击复位" @mousedown.prevent="startTreeResize" @dblclick="resetTreeWidth" @keydown="onTreeResizeKey"></div>
 
+      <LocalPane v-if="localPaneOpen" :remote-entries="entries" :remote-path="cwd" @upload="uploadLocalEntries" @download="downloadLocalEntries" @close="localPaneOpen = false" />
       <section class="fm-content" aria-label="远程文件" :class="{ 'is-drag': dragActive }" @dragover.prevent="dragActive = true" @dragleave="dragActive = false" @drop.prevent="onDropFiles">
         <header class="folder-heading">
           <div class="folder-title"><el-icon class="folder-hero"><Folder /></el-icon><div><h2 :title="folderName">{{ folderName }}</h2><p>{{ folders }} 个文件夹<span>·</span>{{ entries.length - folders }} 个文件</p></div></div>
           <div class="fm-actions">
             <input ref="uploadInput" class="upload-input" type="file" multiple aria-label="选择要上传的文件" @change="onUpload" />
             <input ref="directoryInput" class="upload-input" type="file" webkitdirectory multiple aria-label="选择要上传的目录" @change="onUpload" />
-            <el-button text :loading="opening" :disabled="!selected || selected.is_dir || loading || !!loadError" :title="settings.hint('openFile')" :icon="'TopRight'" @click="selected && open(selected)">外部打开</el-button>
-            <el-button :icon="'Upload'" :loading="transferring" :disabled="!loaded || loading || !!loadError || linkState !== 'ok'" @click="uploadInput?.click()">上传</el-button>
-            <el-button :disabled="!loaded || loading || !!loadError || linkState !== 'ok'" @click="directoryInput?.click()">上传目录</el-button>
-            <el-button :icon="'Download'" :loading="transferring" :disabled="!loaded || loading || !!loadError || linkState !== 'ok'" @click="onDownload()">下载</el-button>
-            <el-button v-if="host && isTerminalProto(host.protocol)" :disabled="linkState !== 'ok'" @click="openTerminalHere">在此目录打开终端</el-button>
-            <el-button :icon="'DocumentAdd'" :disabled="!loaded || loading || !!loadError" @click="createFileAction">新建文件</el-button>
-            <el-button :icon="'FolderAdd'" :disabled="!loaded || loading || !!loadError" @click="createFolder">新建文件夹</el-button>
+            <el-button text :loading="opening" :disabled="!selected || selected.is_dir || loading || !!loadError" :title="settings.hint('openFile') ? `外部打开 ${settings.hint('openFile')}` : '外部打开选中文件'" aria-label="外部打开选中文件" :icon="'TopRight'" @click="selected && open(selected)">外部打开</el-button>
+            <el-button type="primary" :icon="'Upload'" :loading="transferring" :disabled="!loaded || loading || !!loadError || linkState !== 'ok'" title="上传文件" aria-label="上传文件" @click="uploadInput?.click()">上传</el-button>
+            <el-button :icon="'FolderOpened'" :disabled="!loaded || loading || !!loadError || linkState !== 'ok' || transferring" title="上传目录" aria-label="上传目录" @click="directoryInput?.click()">上传目录</el-button>
+            <el-button :icon="'Download'" :loading="transferring" :disabled="!loaded || loading || !!loadError || linkState !== 'ok'" title="下载选中项" aria-label="下载选中项" @click="onDownload()">下载</el-button>
+            <el-button v-if="host && isTerminalProto(host.protocol)" :icon="'Monitor'" :disabled="linkState !== 'ok'" title="在此目录打开终端" aria-label="在此目录打开终端" @click="openTerminalHere">在此目录打开终端</el-button>
+            <el-button :icon="'DocumentAdd'" :disabled="!loaded || loading || !!loadError" title="新建文件" aria-label="新建文件" @click="createFileAction">新建文件</el-button>
+            <el-button :icon="'FolderAdd'" :disabled="!loaded || loading || !!loadError" title="新建文件夹" aria-label="新建文件夹" @click="createFolder">新建文件夹</el-button>
           </div>
         </header>
         <div class="file-controls">
-          <span class="list-label">文件 <span>{{ visibleEntries.length }}</span></span>
+          <span class="list-label">{{ viewMode === 'columns' ? '分栏' : '文件' }} <span>{{ viewMode === 'columns' ? entries.length : visibleEntries.length }}</span></span>
           <button v-if="linkedTerminal" class="follow-toggle" type="button" :aria-pressed="followTerminal" @click="followTerminal = !followTerminal">{{ followTerminal ? '正在跟随终端' : '跟随终端目录' }}</button>
           <button v-if="linkedTerminal" class="follow-toggle" type="button" @click="readShellDirectory">读取终端目录</button>
-          <el-input v-model="query" class="file-search" :prefix-icon="'Search'" clearable placeholder="筛选当前目录…" aria-label="筛选当前目录" />
+          <el-input v-if="viewMode === 'list'" v-model="query" class="file-search" :prefix-icon="'Search'" clearable placeholder="筛选当前目录…" aria-label="筛选当前目录" />
+        </div>
+        <div v-if="pickedCount > 1" class="batch-bar" role="status">
+          <span>已选 {{ pickedCount }} 项</span>
+          <button type="button" @click="onDownload()">下载</button>
+          <button type="button" @click="deletePicked">删除</button>
+          <button type="button" @click="clearPicked">取消选择</button>
         </div>
         <!-- 加载失败 -->
         <div v-if="loadError" class="fm-error" role="alert">
@@ -549,17 +967,51 @@ watch(
           <p class="fm-error-msg">{{ attemptedPath }} — {{ loadError }}</p>
           <div class="error-actions"><el-button :icon="'Refresh'" @click="load(attemptedPath)">重试</el-button><el-button v-if="linkState !== 'ok'" @click="sessionStore.reconnect(tab.id)">重新连接</el-button></div>
         </div>
+        <!-- Miller columns -->
+        <div v-else-if="viewMode === 'columns'" ref="millerScroll" class="miller-view" aria-label="分栏目录视图">
+          <div v-if="!millerColumns.length" class="miller-view-empty">正在准备分栏视图…</div>
+          <section v-for="(column, index) in millerColumns" :key="column.path" class="miller-column" :class="{ current: column.path === cwd }" :aria-label="`第 ${index + 1} 列：${column.path}`">
+            <header class="miller-head">
+              <el-icon><FolderOpened /></el-icon>
+              <span class="miller-head-name" :title="column.path">{{ millerLabel(column.path) }}</span>
+              <span class="miller-count">{{ column.entries.length }}</span>
+            </header>
+            <div class="miller-body">
+              <div v-if="column.loading" class="miller-state"><el-icon class="is-loading"><Loading /></el-icon><span>加载中…</span></div>
+              <div v-else-if="column.error" class="miller-state miller-state-error"><el-icon><WarningFilled /></el-icon><span>加载失败</span><button type="button" @click="buildMillerColumns()">重试</button></div>
+              <template v-else>
+                <button
+                  v-for="entry in column.entries"
+                  :key="entry.path"
+                  type="button"
+                  class="miller-row"
+                  :class="{ active: millerActive(column, entry), 'is-hidden': entry.name.startsWith('.') }"
+                  :title="`${entry.name}\n${entry.path}`"
+                  @click="onMillerClick(column, entry)"
+                  @dblclick="onMillerDouble(entry)"
+                  @keydown="onMillerKey($event, column, entry)"
+                >
+                  <el-icon v-if="entry.is_dir" class="miller-folder"><FolderOpened v-if="cwd === entry.path || cwd.startsWith(entry.path + '/')" /><Folder v-else /></el-icon>
+                  <span v-else class="file-glyph miller-file" :class="fileKind(entry).tone"><el-icon><component :is="fileKind(entry).icon" /></el-icon></span>
+                  <span class="miller-name">{{ entry.name }}</span>
+                  <el-icon v-if="entry.is_dir" class="miller-arrow"><ArrowRight /></el-icon>
+                </button>
+                <p v-if="!column.entries.length" class="miller-state">空文件夹</p>
+              </template>
+            </div>
+          </section>
+        </div>
         <!-- 文件表 -->
         <div v-else v-loading="loading" class="fm-table-wrap" :aria-busy="loading">
           <div class="file-list" role="grid" aria-label="目录内容" :aria-rowcount="visibleEntries.length + 1" :aria-colcount="4">
             <div class="file-columns" role="row">
-              <button type="button" role="columnheader" @click="toggleSort('name')">名称 <el-icon v-if="sortKey === 'name'"><component :is="sortDir === 1 ? 'Top' : 'Bottom'" /></el-icon></button>
-              <button type="button" role="columnheader" @click="toggleSort('mtime')">修改时间 <el-icon v-if="sortKey === 'mtime'"><component :is="sortDir === 1 ? 'Top' : 'Bottom'" /></el-icon></button>
-              <button type="button" role="columnheader" class="f-size" @click="toggleSort('size')">大小 <el-icon v-if="sortKey === 'size'"><component :is="sortDir === 1 ? 'Top' : 'Bottom'" /></el-icon></button>
+              <button type="button" role="columnheader" :aria-sort="ariaSort('name')" @click="toggleSort('name')">名称 <el-icon v-if="sortKey === 'name'"><component :is="sortDir === 1 ? 'Top' : 'Bottom'" /></el-icon></button>
+              <button type="button" role="columnheader" :aria-sort="ariaSort('mtime')" @click="toggleSort('mtime')">修改时间 <el-icon v-if="sortKey === 'mtime'"><component :is="sortDir === 1 ? 'Top' : 'Bottom'" /></el-icon></button>
+              <button type="button" role="columnheader" class="f-size" :aria-sort="ariaSort('size')" @click="toggleSort('size')">大小 <el-icon v-if="sortKey === 'size'"><component :is="sortDir === 1 ? 'Top' : 'Bottom'" /></el-icon></button>
               <span role="columnheader" aria-label="操作"></span>
             </div>
             <div class="file-rows" role="rowgroup">
-              <div v-for="(row, index) in visibleEntries" :key="row.path" class="fm-row" :class="{ selected: selected?.path === row.path || picked.includes(row.path), 'is-hidden': row.name.startsWith('.') }" role="row" :aria-selected="selected?.path === row.path" :tabindex="selected ? (selected.path === row.path ? 0 : -1) : (index === 0 ? 0 : -1)" :title="`${row.name}\n${row.mode}\n${fmtTime(row.mtime)}`" @click="chooseRow($event, row, index)" @focus="selected = row" @dblclick="open(row)" @keydown="onFileKey($event, row)">
+              <div v-for="(row, index) in visibleEntries" :key="row.path" class="fm-row" :class="{ selected: selected?.path === row.path || picked.includes(row.path), 'is-hidden': row.name.startsWith('.') }" role="row" :aria-selected="picked.includes(row.path)" :tabindex="selected ? (selected.path === row.path ? 0 : -1) : (index === 0 ? 0 : -1)" :title="`${row.name}\n${row.mode}\n${fmtTime(row.mtime)}`" @click="chooseRow($event, row, index)" @focus="selected = row" @dblclick="open(row)" @contextmenu.prevent.stop="openRowMenu($event, row)" @keydown="onFileKey($event, row)">
                 <div class="f-name" role="gridcell">
                   <el-icon v-if="row.is_dir" class="folder-icon"><Folder /></el-icon>
                   <span v-else class="file-glyph" :class="fileKind(row).tone" aria-hidden="true"><el-icon><component :is="fileKind(row).icon" /></el-icon></span>
@@ -597,15 +1049,42 @@ watch(
       <button type="button" @click="sessionStore.close(tab.id)">关闭标签</button>
     </div>
     <footer class="fm-status" role="status">
-      <span class="protocol-badge">{{ tab.session?.type.toUpperCase() || 'SFTP' }}</span>
-      <span class="status-detail" v-if="opening">正在下载并打开…</span>
+      <span class="protocol-badge" :class="(tab.session?.type || host?.protocol) === 'ftp' ? 'proto-ftp' : 'proto-sftp'">{{ (tab.session?.type || host?.protocol || 'sftp').toUpperCase() }}</span>
+      <span class="status-detail" v-if="transfer">{{ transferLabel }}</span>
+      <span class="status-detail" v-else-if="opening">正在下载并打开…</span>
       <span class="status-detail" v-else-if="editState" :title="editState.message">{{ EDIT_STATUS[editState.status] }} {{ editState.message }}</span>
       <span class="status-detail" v-else-if="selected" :title="selected.path">{{ selected.name }} <span class="status-kind">{{ fileKind(selected).label }} · {{ selected.mode }}</span></span>
-      <span class="status-detail" v-else-if="transfer">{{ transferLabel }}</span>
       <span class="status-detail" v-else>双击打开 · Enter 进入 · 可拖入文件上传</span>
+      <button v-if="transfer || recentTransfers.length" class="follow-toggle" type="button" @click="transferDrawer = true">{{ transfer ? '传输详情' : '传输记录' }}</button>
       <button v-if="transfer" class="follow-toggle" type="button" @click="cancelTransfer">取消传输</button>
       <span class="status-count">{{ query ? `${visibleEntries.length} / ` : '' }}{{ entries.length }} 项</span>
     </footer>
+    <Teleport to="body">
+      <div v-if="rowMenu" class="fm-row-context" role="menu" aria-label="文件操作" :style="{ left: rowMenu.x + 'px', top: rowMenu.y + 'px' }" @click.stop>
+        <button type="button" role="menuitem" @click="runRowMenuCommand('open')">{{ rowMenu.row.is_dir ? '打开文件夹' : '外部打开' }}</button>
+        <button v-if="!rowMenu.row.is_dir" type="button" role="menuitem" @click="runRowMenuCommand('download')">下载</button>
+        <button type="button" role="menuitem" @click="runRowMenuCommand('rename')">重命名</button>
+        <button type="button" role="menuitem" @click="runRowMenuCommand('copy-path')">复制路径</button>
+        <button type="button" role="menuitem" class="is-danger" @click="runRowMenuCommand('delete')">删除</button>
+      </div>
+    </Teleport>
+    <el-drawer v-model="transferDrawer" title="传输" size="360px" append-to-body>
+      <div v-if="transfer" class="transfer-active">
+        <div class="transfer-active-head"><strong>{{ transfer.direction === 'upload' ? '正在上传' : '正在下载' }}</strong><span>{{ transferPercent }}%</span></div>
+        <p class="transfer-name" :title="transfer.label">{{ transfer.label }}</p>
+        <el-progress :percentage="transferPercent" :show-text="false" :stroke-width="6" />
+        <div class="transfer-meta"><span>{{ fmtSize(transfer.loaded) }}<template v-if="transfer.total"> / {{ fmtSize(transfer.total) }}</template></span><el-button text @click="cancelTransfer">取消</el-button></div>
+      </div>
+      <p v-if="!transfer && !recentTransfers.length" class="transfer-empty">暂无传输记录。上传或下载文件后，进度会显示在这里。</p>
+      <div v-for="item in recentTransfers" :key="item.id" class="transfer-history" :class="item.status">
+        <span class="transfer-kind" aria-hidden="true"><el-icon><Upload v-if="item.direction === 'upload'" /><Download v-else /></el-icon></span>
+        <div class="transfer-body"><strong>{{ item.label }}</strong><small>{{ item.error || (item.status === 'done' ? '已完成' : '失败') }} · {{ fmtSize(item.total) }}</small></div>
+        <time>{{ new Date(item.startedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) }}</time>
+      </div>
+      <template v-if="recentTransfers.length" #footer>
+        <el-button text @click="recentTransfers = []">清空记录</el-button>
+      </template>
+    </el-drawer>
   </div>
 </template>
 
@@ -628,27 +1107,72 @@ watch(
 .path-form { flex: 1; min-width: 0; }
 .path-form input { width: 100%; border: 0; outline: 0; color: var(--sh-text); background: transparent; font: 12px var(--sh-font-mono); user-select: text; }
 .path-box:focus-within { border-color: var(--sh-accent); }
-.fm-workspace { display: flex; flex: 1; min-height: 0; }
-.directory-sidebar { display: flex; flex-direction: column; width: clamp(132px, 28%, 220px); padding: 18px 10px 12px; flex-shrink: 0; min-width: 0; background: var(--sh-tree-bg); border-right: 1px solid var(--sh-tree-border); }
-.tree-heading { display: flex; justify-content: space-between; padding: 0 10px 16px; font-size: 12px; font-weight: 600; color: var(--sh-text-secondary); }
-.tree-heading > span { font-size: 10px; font-weight: 400; color: var(--sh-text-muted); }
-.directory-tree { flex: 1; overflow: auto; background: transparent; --el-tree-node-hover-bg-color: var(--sh-tree-hover); --el-tree-text-color: var(--sh-text-secondary); }
-.directory-tree :deep(.el-tree-node__content) { height: 34px; border-radius: 6px; margin: 2px 0; }
-.directory-tree :deep(.el-tree-node.is-current > .el-tree-node__content) { background: var(--sh-tree-current); color: var(--sh-tree-current-text); font-weight: 600; }
-.directory-tree :deep(.el-tree-node__expand-icon) { color: var(--sh-tree-arrow); padding: 6px; }
+.view-switch { flex-shrink: 0; display: flex; align-items: center; gap: 1px; height: 32px; padding: 2px; border: 1px solid var(--sh-border); border-radius: 7px; background: var(--sh-bg); }
+.view-switch button { width: 26px; height: 26px; display: grid; place-items: center; border: 0; border-radius: 5px; background: transparent; color: var(--sh-text-muted); font-size: 13px; cursor: pointer; }
+.view-switch button:hover { color: var(--sh-text); }
+.view-switch button.active { background: var(--sh-bg-panel); color: var(--sh-accent); box-shadow: 0 0 0 1px var(--sh-border); }
+.view-switch button:focus-visible { outline: 2px solid var(--sh-accent); outline-offset: 1px; }
+.fm-workspace { display: flex; flex: 1; min-height: 0; background: var(--sh-bg); }
+.directory-sidebar { box-sizing: border-box; display: flex; flex-direction: column; padding: 10px 8px; margin: 10px 0 10px 10px; flex-shrink: 0; min-width: 0; overflow: hidden; border: 1px solid var(--sh-tree-border); border-radius: 12px; background: var(--sh-bg-panel); box-shadow: 0 1px 2px rgba(15, 17, 21, 0.03); }
+.tree-top { flex-shrink: 0; padding: 0 2px; }
+.tree-heading { display: flex; align-items: center; gap: 6px; padding: 0 4px 8px; color: var(--sh-text-secondary); }
+.tree-title { font-size: 12px; font-weight: 600; color: var(--sh-text); }
+.tree-proto { height: 16px; display: inline-flex; align-items: center; padding: 0 4px; border: 1px solid var(--sh-border); border-radius: 4px; color: var(--sh-sftp); font: 600 8px var(--sh-font-mono); letter-spacing: 0.04em; }
+.tree-proto.is-ftp { color: var(--sh-ftp); }
+.tree-tools { margin-left: auto; display: flex; align-items: center; gap: 1px; }
+.tree-tool { width: 22px; height: 22px; display: grid; place-items: center; border: 0; border-radius: 5px; background: transparent; color: var(--sh-text-muted); font-size: 12px; cursor: pointer; }
+.tree-tool:hover:not(:disabled) { background: var(--sh-bg-hover); color: var(--sh-text); }
+.tree-tool:disabled { opacity: 0.35; cursor: not-allowed; }
+.tree-tool:focus-visible { outline: 2px solid var(--sh-accent); outline-offset: 1px; }
+.tree-path-row { display: flex; align-items: center; gap: 4px; margin: 0 0 7px; }
+.tree-path { flex: 1; min-width: 0; height: 28px; display: flex; align-items: center; gap: 6px; padding: 0 7px; border: 1px solid var(--sh-border); border-radius: 6px; background: var(--sh-bg-panel); color: var(--sh-text-muted); font: 10px var(--sh-font-mono); text-align: left; cursor: pointer; }
+.tree-path > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-path:hover:not(:disabled) { border-color: var(--sh-border-strong); color: var(--sh-text); }
+.tree-fav-toggle { width: 28px; height: 28px; flex-shrink: 0; display: grid; place-items: center; border: 1px solid var(--sh-border); border-radius: 6px; background: var(--sh-bg-panel); color: var(--sh-text-muted); font-size: 13px; cursor: pointer; }
+.tree-fav-toggle:hover:not(:disabled) { border-color: var(--sh-border-strong); color: var(--sh-warning); }
+.tree-fav-toggle.active { border-color: var(--sh-warning-border, var(--sh-border-strong)); color: var(--sh-warning); background: var(--sh-warning-bg); }
+.tree-fav-toggle:disabled { opacity: 0.45; cursor: default; }
+.tree-fav-toggle:focus-visible { outline: 2px solid var(--sh-accent); outline-offset: 1px; }
+.tree-path:disabled { opacity: 0.55; cursor: default; }
+.tree-locate { flex-shrink: 0; font-size: 11px; opacity: 0; transition: opacity 0.12s ease; }
+.tree-path:hover .tree-locate, .tree-path:focus-visible .tree-locate { opacity: 1; }
+.directory-tree { flex: 1; overflow: auto; padding: 0 2px; background: transparent; --el-tree-node-hover-bg-color: var(--sh-tree-hover); --el-tree-text-color: var(--sh-text-secondary); }
+.directory-tree :deep(.el-tree-node__content) { height: 32px; margin: 1px 0; padding-right: 7px; border-radius: 6px; }
+.directory-tree :deep(.el-tree-node.is-current > .el-tree-node__content) { background: var(--sh-tree-current); color: var(--sh-tree-current-text); font-weight: 600; box-shadow: inset 2px 0 var(--sh-accent); }
+.directory-tree :deep(.el-tree-node__expand-icon) { color: var(--sh-tree-arrow); padding: 5px; font-size: 12px; }
 .directory-tree :deep(.el-tree-node__expand-icon.is-leaf) { color: transparent; }
-.tree-label { display: flex; align-items: center; gap: 9px; min-width: 0; padding-right: 10px; font-size: 12px; }
+.tree-label { display: flex; align-items: center; gap: 8px; min-width: 0; padding-right: 6px; font-size: 12px; }
 .tree-label > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tree-placeholder { color: var(--sh-text-muted); font-size: 12px; padding: 0 10px; flex: 1; }
-.tree-host { display: flex; align-items: center; gap: 7px; color: var(--sh-text-muted); font-size: 10px; border-top: 1px solid var(--sh-border); padding: 14px 8px 0; margin-top: 12px; }
+.tree-section-label { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 6px 3px; color: var(--sh-text-muted); font-size: 10px; font-weight: 600; letter-spacing: 0.04em; }
+.tree-section-label > span:last-child { font: 9px var(--sh-font-mono); font-weight: 400; opacity: 0.7; }
+.tree-section-directory { margin-top: 4px; }
+.tree-favorites { max-height: 128px; overflow: auto; padding: 0 1px 2px; }
+.tree-favorite { display: flex; align-items: center; gap: 1px; }
+.tree-favorite-main { min-width: 0; flex: 1; height: 27px; display: flex; align-items: center; gap: 7px; padding: 0 7px; border: 0; border-radius: 6px; background: transparent; color: var(--sh-text-secondary); font-size: 11px; text-align: left; cursor: pointer; }
+.tree-favorite-main:hover { background: var(--sh-bg-hover); color: var(--sh-text); }
+.tree-favorite-main .el-icon { flex-shrink: 0; color: var(--sh-warning); font-size: 11px; }
+.tree-favorite-main span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-fav-remove { width: 22px; height: 22px; flex-shrink: 0; display: grid; place-items: center; border: 0; border-radius: 5px; background: transparent; color: var(--sh-text-muted); font-size: 10px; opacity: 0.55; cursor: pointer; }
+.tree-fav-remove:hover { background: var(--sh-bg-hover); color: var(--sh-danger); opacity: 1; }
+.tree-fav-remove:focus-visible { outline: 2px solid var(--sh-accent); outline-offset: 1px; opacity: 1; }
+.tree-placeholder { flex: 1; display: flex; align-items: flex-start; gap: 8px; padding: 10px 8px; color: var(--sh-text-muted); font-size: 11px; line-height: 1.6; }
+.tree-placeholder .el-icon { margin-top: 2px; font-size: 14px; }
+.tree-retry { margin-left: auto; padding: 0; border: 0; background: transparent; color: var(--sh-accent); font-size: 11px; cursor: pointer; }
+.tree-host { display: flex; align-items: center; gap: 7px; color: var(--sh-text-muted); font-size: 10px; border-top: 1px solid var(--sh-border); padding: 12px 6px 0; margin-top: 10px; }
 .tree-host > span:first-of-type { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-resizer { width: 5px; margin-left: 1px; flex-shrink: 0; position: relative; z-index: 2; cursor: col-resize; background: transparent; outline: none; }
+.tree-resizer::before { content: ''; position: absolute; top: calc(50% - 12px); left: 2px; width: 1px; height: 24px; border-radius: 1px; background: var(--sh-border-strong); opacity: 0.55; }
+.tree-resizer::after { content: ''; position: absolute; top: 12%; bottom: 12%; left: 2px; width: 1px; border-radius: 1px; background: transparent; transition: background 0.12s ease; }
+.tree-resizer:hover, .tree-resizer:focus-visible { background: var(--sh-accent-soft); }
+.tree-resizer:hover::before, .tree-resizer:focus-visible::before { opacity: 0; }
+.tree-resizer:hover::after, .tree-resizer:focus-visible::after { left: 1.5px; width: 2px; background: var(--sh-accent); }
 .connection-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--sh-text-muted); }
 .connection-dot.ok { background: var(--sh-success); }
 .connection-dot.pending { background: var(--sh-warning); }
-.tree-folder, .folder-icon, .folder-hero { flex-shrink: 0; color: var(--sh-ftp); }
+.tree-folder, .folder-icon, .folder-hero { flex-shrink: 0; color: var(--sh-accent); }
 .folder-hero { font-size: 28px; }
 .folder-icon, .tree-folder { font-size: 16px; }
-.fm-content { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; padding: 0 22px; }
+.fm-content { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; padding: 0 22px; background: var(--sh-bg-panel); }
 .folder-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 26px 0 22px; flex-wrap: wrap; }
 .folder-title { display: flex; align-items: center; gap: 14px; min-width: 0; flex: 1; }
 .folder-title > div { min-width: 0; }
@@ -658,10 +1182,34 @@ watch(
 .fm-actions :deep(.el-button) { margin-left: 0; font-size: 12px; }
 .file-controls { display: flex; align-items: center; justify-content: space-between; padding-bottom: 14px; gap: 12px; flex-wrap: wrap; }
 .list-label { font-size: 12px; color: var(--sh-text-secondary); font-weight: 600; white-space: nowrap; }
-.list-label > span { display: inline-block; margin-left: 5px; padding: 2px 6px; background: var(--sh-count-bg); border-radius: 5px; font-size: 10px; font-weight: 500; color: var(--sh-text-muted); }
+.list-label > span { display: inline-block; margin-left: 5px; padding: 2px 6px; background: var(--sh-count-bg); border-radius: 5px; font-size: 11px; font-weight: 500; color: var(--sh-text-muted); }
 .file-search { max-width: 218px; font-size: 12px; }
 .file-search :deep(.el-input__wrapper) { background: var(--sh-search-bg) !important; box-shadow: none !important; }
 .upload-input { display: none; }
+.miller-view { flex: 1; min-height: 0; display: flex; overflow-x: auto; overflow-y: hidden; border-top: 1px solid var(--sh-border); background: var(--sh-bg-panel); scrollbar-width: thin; }
+.miller-view::-webkit-scrollbar { height: 6px; }
+.miller-column { width: 230px; flex-shrink: 0; min-height: 0; display: flex; flex-direction: column; border-right: 1px solid var(--sh-border); }
+.miller-column:last-child { border-right: 0; }
+.miller-head { height: 38px; flex-shrink: 0; display: flex; align-items: center; gap: 7px; padding: 0 12px; border-bottom: 1px solid var(--sh-border); background: var(--sh-bg); color: var(--sh-text-secondary); font-size: 11px; }
+.miller-column.current .miller-head { background: var(--sh-bg-elevated); color: var(--sh-text); box-shadow: inset 0 -2px var(--sh-accent); }
+.miller-head > .el-icon { flex-shrink: 0; color: var(--sh-accent); font-size: 14px; }
+.miller-head-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.miller-count { margin-left: auto; color: var(--sh-text-muted); font: 9px var(--sh-font-mono); }
+.miller-body { flex: 1; min-height: 0; overflow: auto; padding: 4px; }
+.miller-row { width: 100%; height: 32px; display: flex; align-items: center; gap: 8px; padding: 0 8px; border: 0; border-radius: 6px; background: transparent; color: var(--sh-text-secondary); font-size: 12px; text-align: left; cursor: pointer; }
+.miller-row:hover { background: var(--sh-bg-hover); color: var(--sh-text); }
+.miller-row.active { background: var(--sh-accent-soft); color: var(--sh-text); box-shadow: inset 2px 0 var(--sh-accent); }
+.miller-row.is-hidden { opacity: 0.55; }
+.miller-row:focus-visible { outline: 2px solid var(--sh-accent); outline-offset: -2px; }
+.miller-folder { flex-shrink: 0; color: var(--sh-accent); font-size: 15px; }
+.miller-row .miller-file { width: 20px; height: 22px; flex-shrink: 0; display: grid; place-items: center; border: 1px solid var(--sh-file-glyph-border); border-radius: 4px; background: var(--sh-file-glyph-bg); color: var(--sh-file-glyph-color); font-size: 13px; }
+.miller-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.miller-arrow { flex-shrink: 0; color: var(--sh-text-muted); font-size: 10px; opacity: 0; }
+.miller-row:hover .miller-arrow, .miller-row.active .miller-arrow { opacity: 1; }
+.miller-state { display: flex; align-items: center; gap: 6px; padding: 12px 9px; color: var(--sh-text-muted); font-size: 11px; line-height: 1.6; }
+.miller-state-error { color: var(--sh-danger); flex-wrap: wrap; }
+.miller-state button { padding: 0; border: 0; background: transparent; color: var(--sh-accent); font-size: 11px; cursor: pointer; }
+.miller-view-empty { flex: 1; display: grid; place-items: center; color: var(--sh-text-muted); font-size: 12px; }
 .fm-table-wrap { flex: 1; min-height: 0; overflow: auto; padding-bottom: 12px; }
 .file-columns, .fm-row { display: grid; grid-template-columns: minmax(130px, 1fr) 138px 65px 28px; align-items: center; gap: 14px; padding: 0 10px; }
 .file-columns { position: sticky; top: 0; z-index: 1; height: 34px; background: var(--sh-bg-panel); color: var(--sh-text-muted); border-top: 1px solid var(--sh-column-line); border-bottom: 1px solid var(--sh-column-line); font-size: 11px; }
@@ -681,11 +1229,11 @@ watch(
 .is-hidden .file-name-text { color: var(--sh-text-muted); }
 .folder-arrow { opacity: 0; color: var(--sh-text-muted); margin-left: auto; flex-shrink: 0; font-size: 10px; }
 .fm-row:hover .folder-arrow { opacity: 1; }
-.file-glyph { width: 27px; height: 29px; display: grid; place-items: center; border: 1px solid var(--sh-file-glyph-border); border-radius: 4px; color: var(--sh-file-glyph-color); background: var(--sh-file-glyph-bg); flex-shrink: 0; font-size: 18px; box-sizing: border-box; }
-.file-glyph.code { color: #6d8fa5; background: #f0f5f8; border-color: #dae6ed; }
-.file-glyph.config { color: #8a87aa; background: #f4f2f9; border-color: #e3dfef; }
-.file-glyph.archive { color: #ad916a; background: #faf5ec; border-color: #eae1cf; }
-.file-glyph.image { color: #6b9b86; background: #f0f7f3; border-color: #d9e8e0; }
+.file-glyph { width: 27px; height: 29px; display: grid; place-items: center; border: 1px solid var(--sh-file-glyph-border); border-radius: 6px; color: var(--sh-file-glyph-color); background: var(--sh-file-glyph-bg); flex-shrink: 0; font-size: 18px; box-sizing: border-box; }
+.file-glyph.code { color: var(--sh-file-code); background: var(--sh-file-code-bg); border-color: var(--sh-file-code-border); }
+.file-glyph.config { color: var(--sh-file-config); background: var(--sh-file-config-bg); border-color: var(--sh-file-config-border); }
+.file-glyph.archive { color: var(--sh-file-archive); background: var(--sh-file-archive-bg); border-color: var(--sh-file-archive-border); }
+.file-glyph.image { color: var(--sh-file-image); background: var(--sh-file-image-bg); border-color: var(--sh-file-image-border); }
 .f-size { font-size: 11px; color: var(--sh-text-muted); text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .f-time { font-size: 11px; color: var(--sh-text-muted); white-space: nowrap; }
 .row-more { width: 26px; height: 26px; opacity: .25; }
@@ -699,13 +1247,45 @@ watch(
 .fm-recovery button { border: 0; border-radius: 6px; background: transparent; color: var(--sh-text); font-size: 12px; cursor: pointer; }
 .fm-blank strong, .fm-error-title { color: var(--sh-text-secondary); font-size: 14px; font-weight: 500; margin: 0; }
 .fm-error-msg { max-width: 420px; overflow-wrap: anywhere; margin: 0 0 8px; }
-.fm-status { min-height: 34px; flex-shrink: 0; display: flex; align-items: center; gap: 12px; padding: 0 16px; font-size: 10px; color: var(--sh-text-muted); border-top: 1px solid var(--sh-border); background: var(--sh-bg-elevated); }
-.protocol-badge { font-size: 9px; letter-spacing: .6px; font-weight: 600; color: var(--sh-sftp); }
+.batch-bar { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; padding: 8px 10px; border: 1px solid var(--sh-accent-border); border-radius: 8px; background: var(--sh-accent-soft); font-size: 12px; color: var(--sh-text-secondary); }
+.batch-bar > span { margin-right: auto; }
+.batch-bar button { border: 0; background: transparent; color: var(--sh-accent); font-size: 12px; cursor: pointer; }
+.batch-bar button:hover { color: var(--sh-text); }
+.transfer-active { padding: 4px 2px 18px; border-bottom: 1px solid var(--sh-border); margin-bottom: 8px; }
+.transfer-active-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 12px; color: var(--sh-text-secondary); }
+.transfer-active-head span { font-family: var(--sh-font-mono); color: var(--sh-text-muted); }
+.transfer-name { margin: 10px 0; font-size: 13px; color: var(--sh-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.transfer-meta { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 8px; font: 11px var(--sh-font-mono); color: var(--sh-text-muted); }
+.transfer-meta :deep(.el-button) { padding: 0; font-size: 11px; }
+.transfer-history { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--sh-border); }
+.transfer-kind { width: 28px; height: 28px; display: grid; place-items: center; flex-shrink: 0; border-radius: 7px; background: var(--sh-bg); color: var(--sh-text-secondary); }
+.transfer-history.error .transfer-kind { color: var(--sh-danger); }
+.transfer-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.transfer-body strong { font-size: 12px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.transfer-body small { font-size: 11px; color: var(--sh-text-muted); }
+.transfer-history.error .transfer-body small { color: var(--sh-danger); }
+.transfer-history time { font: 11px var(--sh-font-mono); color: var(--sh-text-muted); }
+.transfer-empty { margin: 12px 2px; font-size: 12px; line-height: 1.7; color: var(--sh-text-muted); }
+
+.fm-row-context { position: fixed; z-index: 120; min-width: 168px; padding: 4px; border: 1px solid var(--sh-border); border-radius: 8px; background: var(--sh-bg-panel); box-shadow: var(--sh-shadow-pop); }
+.fm-row-context button { display: block; width: 100%; padding: 7px 9px; border: 0; border-radius: 5px; background: transparent; color: var(--sh-text-secondary); font-size: 12px; text-align: left; cursor: pointer; }
+.fm-row-context button:hover { background: var(--sh-bg-hover); color: var(--sh-text); }
+.fm-row-context button.is-danger { color: var(--sh-danger); }
+.fm-status { min-height: 34px; flex-shrink: 0; display: flex; align-items: center; gap: 12px; padding: 0 16px; font-size: 11px; color: var(--sh-text-muted); border-top: 1px solid var(--sh-border); background: var(--sh-bg); }
+.protocol-badge { font-size: 10px; letter-spacing: .6px; font-weight: 600; }
+.protocol-badge.proto-sftp { color: var(--sh-sftp); }
+.protocol-badge.proto-ftp { color: var(--sh-ftp); }
 .status-detail { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .status-kind { margin-left: 10px; color: var(--sh-text-muted); }
 .status-count { margin-left: auto; white-space: nowrap; }
+/* 窄窗口只留图标，避免操作按钮被挤成孤立的一行 */
+@container (max-width: 900px) {
+  .fm-actions { gap: 2px; }
+  .fm-actions :deep(.el-button) { padding-inline: 9px; }
+  .fm-actions :deep(.el-button > span) { display: none; }
+}
 @container (max-width: 780px) {
-  .directory-sidebar { width: clamp(120px, 24%, 160px); padding-inline: 6px; }
+  .directory-sidebar { padding-inline: 6px; }
   .fm-content { padding: 0 14px; }
   .folder-heading { padding-block: 20px 16px; }
   .folder-title h2 { font-size: 18px; }
@@ -714,7 +1294,6 @@ watch(
   .f-time, .file-columns > :nth-child(2) { display: none; }
 }
 @container (max-width: 540px) {
-  .directory-sidebar { width: 120px; }
   .fm-toolbar { padding-inline: 10px; gap: 8px; }
   .folder-heading { align-items: flex-start; }
   .fm-actions { flex-wrap: wrap; }

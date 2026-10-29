@@ -15,7 +15,7 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
-from .api import files, hosts, sessions, terminals
+from .api import files, hosts, sessions, terminals, tunnels
 from .core.db import get_engine, init_db
 from .core.security import require_auth
 from .core.state import get_settings, init_state
@@ -55,12 +55,15 @@ def create_app() -> FastAPI:
         from .services.session_manager import get_session_manager
 
         get_session_manager().close_all()
+        from .services.tunnel_service import get_tunnel_manager
+        get_tunnel_manager().close_all()
         return {"status": "bye"}
 
     app.include_router(hosts.router)
     app.include_router(sessions.router)
     app.include_router(files.router)
     app.include_router(terminals.router)
+    app.include_router(tunnels.router)
     return app
 
 
@@ -133,6 +136,8 @@ def _cleanup() -> None:
         from .services.session_manager import get_session_manager
 
         get_session_manager().close_all()
+        from .services.tunnel_service import get_tunnel_manager
+        get_tunnel_manager().close_all()
     except Exception:  # noqa: BLE001
         pass
 

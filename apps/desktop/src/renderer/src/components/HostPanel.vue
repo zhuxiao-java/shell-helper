@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { nextTick, onMounted, ref } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useHostStore } from '@renderer/stores/host'
+import { useSettingsStore } from '@renderer/stores/settings'
 import * as hostApi from '@renderer/api/hosts'
 import type { Host, HostInput, Protocol } from '@renderer/api/types'
 import { isTerminalProto, isFileProto } from '@renderer/api/types'
@@ -13,9 +14,12 @@ const emit = defineEmits<{
   (e: 'open-terminal', id: string): void
   (e: 'open-files', id: string): void
   (e: 'open-default', id: string): void
+  (e: 'share-host', host: Host): void
+  (e: 'tunnel-host', host: Host): void
 }>()
 
 const hostStore = useHostStore()
+const settings = useSettingsStore()
 const { grouped, loading, keyword, error, hosts } = storeToRefs(hostStore)
 
 // 单击选中 / 双击连接
@@ -24,15 +28,96 @@ function onSelect(h: Host): void {
   selectedId.value = h.id
 }
 
+const contextMenu = ref<{ x: number; y: number; host: Host } | null>(null)
+function openContextMenu(event: MouseEvent, host: Host): void {
+  const width = 178
+  const height = 228
+  contextMenu.value = {
+    x: Math.max(8, Math.min(event.clientX, window.innerWidth - width - 8)),
+    y: Math.max(8, Math.min(event.clientY, window.innerHeight - height - 8)),
+    host
+  }
+}
+function closeContextMenu(): void {
+  contextMenu.value = null
+}
+async function runContextAction(command: string): Promise<void> {
+  const host = contextMenu.value?.host
+  contextMenu.value = null
+  if (host) await onRowCommand(command, host)
+}
+
 // 加载失败后重试
 function retryLoad(): void {
   hostStore.refresh().catch(() => undefined)
 }
 
 const COLLAPSE_KEY = 'shell-helper:collapsed-groups'
+const GROUP_AVATAR_KEY = 'shell-helper:group-avatars'
+const groupAvatars = ref<Record<string, string>>({})
+const avatarInput = ref<HTMLInputElement>()
+const avatarTarget = ref('')
 const collapsed = ref<Set<string>>(new Set())
 function rememberGroups(): void {
   try { localStorage.setItem(COLLAPSE_KEY, JSON.stringify([...collapsed.value])) } catch { /* 隐私模式写入失败不阻断 */ }
+}
+function loadGroupAvatars(): void {
+  try {
+    const stored = JSON.parse(localStorage.getItem(GROUP_AVATAR_KEY) || '{}') as unknown
+    groupAvatars.value = stored && typeof stored === 'object' ? stored as Record<string, string> : {}
+  } catch { groupAvatars.value = {} }
+}
+function saveGroupAvatars(): void {
+  try { localStorage.setItem(GROUP_AVATAR_KEY, JSON.stringify(groupAvatars.value)) } catch { ElMessage.warning('头像已应用，但本地存储空间不足') }
+}
+function groupInitial(name: string): string {
+  return Array.from((name || '?').trim())[0]?.toUpperCase() || '?'
+}
+function groupTone(name: string): number {
+  let sum = 0
+  for (const char of name) sum = (sum + char.charCodeAt(0)) % 5
+  return sum
+}
+function hasGroupAvatar(group: string): boolean {
+  return !!groupAvatars.value[group]
+}
+function onGroupAvatarCommand(command: string, group: string): void {
+  if (command === 'upload') {
+    avatarTarget.value = group
+    avatarInput.value?.click()
+    return
+  }
+  if (command === 'remove') {
+    const next = { ...groupAvatars.value }
+    delete next[group]
+    groupAvatars.value = next
+    saveGroupAvatars()
+    ElMessage.success('已移除分组头像')
+  }
+}
+function onGroupAvatarChange(event: Event): void {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file || !avatarTarget.value) return
+  if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(file.type)) {
+    ElMessage.warning('请选择 PNG、JPEG、WebP 或 GIF 图片')
+    return
+  }
+  if (file.size > 512 * 1024) {
+    ElMessage.warning('分组头像不能超过 512 KiB')
+    return
+  }
+  const group = avatarTarget.value
+  const reader = new FileReader()
+  reader.onload = () => {
+    if (typeof reader.result !== 'string') return
+    groupAvatars.value = { ...groupAvatars.value, [group]: reader.result }
+    saveGroupAvatars()
+    ElMessage.success('分组头像已更新')
+  }
+  reader.onerror = () => ElMessage.error('读取头像失败')
+  reader.readAsDataURL(file)
 }
 function toggleGroup(g: string): void {
   const next = new Set(collapsed.value)
@@ -138,9 +223,12 @@ async function onImport(event: Event): Promise<void> {
 }
 
 async function onRowCommand(cmd: string, host: Host): Promise<void> {
+  contextMenu.value = null
   if (cmd === 'terminal' && canTerminal(host)) emit('open-terminal', host.id)
   else if (cmd === 'files' && canFiles(host)) emit('open-files', host.id)
   else if (cmd === 'edit') emit('edit-host', host)
+  else if (cmd === 'share') emit('share-host', host)
+  else if (cmd === 'tunnel') emit('tunnel-host', host)
   else if (cmd === 'duplicate') await duplicate(host)
   else if (cmd === 'del') {
     try {
@@ -162,22 +250,36 @@ onMounted(() => {
     const saved = JSON.parse(localStorage.getItem(COLLAPSE_KEY) || '[]') as unknown
     if (Array.isArray(saved)) collapsed.value = new Set(saved.filter((item): item is string => typeof item === 'string'))
   } catch { /* 忽略损坏的折叠记录 */ }
+  loadGroupAvatars()
+  window.addEventListener('click', closeContextMenu)
+  window.addEventListener('blur', closeContextMenu)
   hostStore.refresh().catch(() => undefined)
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('click', closeContextMenu)
+  window.removeEventListener('blur', closeContextMenu)
 })
 </script>
 
 <template>
   <div class="host-panel">
+    <button type="button" class="panel-new" @click="emit('new-host')">
+      <el-icon><Plus /></el-icon>
+      <span>新建连接</span>
+      <kbd v-if="settings.hint('newConnection')" class="panel-new-kbd">{{ settings.hint('newConnection') }}</kbd>
+    </button>
     <div class="panel-heading">
       <span>连接库 <span class="library-count">{{ hosts.length }}</span></span>
-      <el-tooltip content="新建连接">
-        <button class="panel-add" aria-label="新建连接" @click="emit('new-host')"><el-icon><Plus /></el-icon></button>
-      </el-tooltip>
-    </div>
-    <div class="panel-tools">
-      <button type="button" @click="exportHosts">导出</button>
-      <button type="button" @click="importInput?.click()">导入</button>
-      <input ref="importInput" class="upload-input" type="file" accept="application/json,.json" aria-label="导入连接" @change="onImport" />
+      <div class="heading-actions">
+        <el-tooltip content="导出连接">
+          <button type="button" class="panel-icon" aria-label="导出连接" @click="exportHosts"><el-icon><Download /></el-icon></button>
+        </el-tooltip>
+        <el-tooltip content="导入连接">
+          <button type="button" class="panel-icon" aria-label="导入连接" @click="importInput?.click()"><el-icon><Upload /></el-icon></button>
+        </el-tooltip>
+        <input ref="importInput" class="upload-input" type="file" accept="application/json,.json" aria-label="导入连接" @change="onImport" />
+        <input ref="avatarInput" class="upload-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" aria-label="选择分组头像" @change="onGroupAvatarChange" />
+      </div>
     </div>
     <div class="panel-toolbar">
       <el-input
@@ -203,8 +305,7 @@ onMounted(() => {
       <div v-else-if="!hosts.length" class="panel-empty">
         <el-icon :size="28"><Connection /></el-icon>
         <p>把常用的连接放在这里</p>
-        <span class="empty-sub">常用主机与远程文件，随时切换。</span>
-        <el-button text size="small" :icon="'Plus'" @click="emit('new-host')">添加连接</el-button>
+        <span class="empty-sub">点击上方「新建连接」添加第一台主机。</span>
       </div>
 
       <!-- 搜索无匹配 -->
@@ -215,11 +316,25 @@ onMounted(() => {
       </div>
 
       <div v-for="g in grouped" v-else :key="g.group" class="group-block">
-        <button class="group-title" :class="{ drop: dropGroup === g.group }" :aria-expanded="!collapsed.has(g.group)" @click="toggleGroup(g.group)" @dragover.prevent="dropGroup = g.group" @dragleave="dropGroup = ''" @drop.prevent="onDropGroup($event, g.group)">
-          <el-icon class="caret" :class="{ collapsed: collapsed.has(g.group) }"><ArrowDown /></el-icon>
-          <span class="g-name">{{ g.group }}</span>
-          <span class="g-count">{{ g.items.length }}</span>
-        </button>
+        <div class="group-head">
+          <el-dropdown trigger="click" @command="(command: string) => onGroupAvatarCommand(command, g.group)">
+            <button class="group-avatar" :class="`tone-${groupTone(g.group)}`" type="button" :aria-label="`设置分组 ${g.group} 的头像`" :title="hasGroupAvatar(g.group) ? '更换或移除分组头像' : '设置分组头像'">
+              <img v-if="hasGroupAvatar(g.group)" :src="groupAvatars[g.group]" :alt="`${g.group} 头像`" />
+              <span v-else>{{ groupInitial(g.group) }}</span>
+            </button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="upload" :icon="'Picture'">上传分组头像</el-dropdown-item>
+                <el-dropdown-item v-if="hasGroupAvatar(g.group)" command="remove" :icon="'Delete'">移除分组头像</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+          <button class="group-title" :class="{ drop: dropGroup === g.group }" :aria-expanded="!collapsed.has(g.group)" @click="toggleGroup(g.group)" @dragover.prevent="dropGroup = g.group" @dragleave="dropGroup = ''" @drop.prevent="onDropGroup($event, g.group)">
+            <el-icon class="caret" :class="{ collapsed: collapsed.has(g.group) }"><ArrowDown /></el-icon>
+            <span class="g-name">{{ g.group }}</span>
+            <span class="g-count">{{ g.items.length }}</span>
+          </button>
+        </div>
 
         <div v-show="!collapsed.has(g.group)">
           <div
@@ -240,6 +355,7 @@ onMounted(() => {
             @keydown.down.self.prevent="moveSelection(1)"
             @keydown.space.self.prevent="onSelect(h)"
             @dragstart="onDragStart($event, h)"
+            @contextmenu.prevent.stop="openContextMenu($event, h)"
           >
           <div class="host-icon" :class="`proto-${h.protocol}`">
             <el-icon><component :is="hostIcon(h.protocol)" /></el-icon>
@@ -272,6 +388,17 @@ onMounted(() => {
       </div>
     </el-scrollbar>
     <div class="panel-footer"><el-icon><Pointer /></el-icon><span>方向键移动，Enter 或双击连接</span></div>
+    <Teleport to="body">
+      <div v-if="contextMenu" class="host-context" role="menu" aria-label="主机操作" :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }" @click.stop>
+        <button v-if="canTerminal(contextMenu.host)" type="button" role="menuitem" @click="runContextAction('terminal')">打开终端</button>
+        <button v-if="canFiles(contextMenu.host)" type="button" role="menuitem" @click="runContextAction('files')">文件管理</button>
+        <button type="button" role="menuitem" @click="runContextAction('edit')">编辑连接</button>
+        <button v-if="contextMenu.host.protocol !== 'local'" type="button" role="menuitem" @click="runContextAction('share')">分享到局域网</button>
+        <button v-if="contextMenu.host.protocol === 'ssh' || contextMenu.host.protocol === 'sftp'" type="button" role="menuitem" @click="runContextAction('tunnel')">端口转发</button>
+        <button type="button" role="menuitem" @click="runContextAction('duplicate')">复制连接</button>
+        <button type="button" role="menuitem" class="is-danger" @click="runContextAction('del')">删除连接</button>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -281,18 +408,43 @@ onMounted(() => {
   flex-direction: column;
   height: 100%;
 }
+.panel-new {
+  height: 36px;
+  margin: 10px 14px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex-shrink: 0;
+  border: 1px solid var(--sh-border-strong);
+  border-radius: var(--sh-radius-sm);
+  background: var(--sh-bg-panel);
+  color: var(--sh-text);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(15, 17, 21, 0.04);
+  transition: background 0.14s ease, border-color 0.14s ease;
+}
+.panel-new:hover { background: var(--sh-bg-hover); border-color: var(--sh-text-muted); }
+.panel-new-kbd { padding: 1px 4px; border: 1px solid var(--sh-border); border-radius: 4px; background: var(--sh-bg); color: var(--sh-text-muted); font: 10px var(--sh-font-mono); }
+.panel-new:active { background: var(--sh-bg-active); }
 .panel-heading {
-  height: 44px;
-  padding: 0 16px 0 20px;
+  height: 32px;
+  padding: 0 14px 0 18px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   flex-shrink: 0;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--sh-text-muted);
 }
 .library-count { margin-left: 7px; font: 11px var(--sh-font-mono); color: var(--sh-text-muted); }
-.panel-add {
+.heading-actions { display: flex; align-items: center; gap: 2px; }
+.panel-icon {
   width: 26px;
   height: 26px;
   display: grid;
@@ -300,34 +452,32 @@ onMounted(() => {
   border: 0;
   border-radius: 6px;
   background: transparent;
-  color: var(--sh-text-secondary);
+  color: var(--sh-text-muted);
   cursor: pointer;
 }
-.panel-add:hover { background: var(--sh-bg-active); color: var(--sh-text); }
+.panel-icon:hover { background: var(--sh-bg-hover); color: var(--sh-text); }
+.upload-input { display: none; }
 .panel-toolbar {
   display: flex;
-  padding: 8px 14px 14px;
+  padding: 4px 14px 14px;
 }
-.panel-tools { display: flex; gap: 8px; padding: 0 16px 2px; }
-.panel-tools button { border: 0; background: transparent; color: var(--sh-text-secondary); font-size: 11px; cursor: pointer; padding: 0; }
-.panel-tools .upload-input { display: none; }
 .panel-toolbar :deep(.el-input__wrapper) {
   background: var(--sh-bg-panel) !important;
-  box-shadow: none !important;
+  box-shadow: 0 0 0 1px var(--sh-border) inset !important;
   font-size: 12px;
+  height: 34px;
 }
+.panel-toolbar :deep(.el-input__wrapper.is-focus) { box-shadow: 0 0 0 1px var(--sh-accent) inset !important; }
+.panel-toolbar .el-input { flex: 1; }
 .group-title.drop { background: var(--sh-bg-active); }
-.host-tags { display: block; color: var(--sh-text-muted); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.panel-toolbar :deep(.el-input__wrapper.is-focus) { box-shadow: 0 0 0 1px var(--sh-accent-border) inset !important; }
-.panel-toolbar .el-input {
-  flex: 1;
-}
+.host-tags { display: block; color: var(--sh-text-muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .panel-footer {
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 16px 20px;
-  font-size: 10px;
+  padding: 14px 18px;
+  border-top: 1px solid var(--sh-border);
+  font-size: 11px;
   color: var(--sh-text-muted);
 }
 .panel-scroll {
@@ -356,22 +506,49 @@ onMounted(() => {
 
 /* 分组 */
 .group-block {
-  padding: 0 10px 12px;
+  padding: 0 8px 10px;
 }
+.group-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 0;
+}
+.group-avatar {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: var(--sh-accent-soft);
+  color: var(--sh-accent);
+  font: 600 10px var(--sh-font-ui);
+  cursor: pointer;
+  transition: transform 0.12s ease, border-color 0.12s ease;
+}
+.group-avatar:hover { transform: translateY(-1px); border-color: var(--sh-border-strong); }
+.group-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.group-avatar.tone-1 { background: var(--sh-file-code-bg); color: var(--sh-file-code); }
+.group-avatar.tone-2 { background: var(--sh-file-config-bg); color: var(--sh-file-config); }
+.group-avatar.tone-3 { background: var(--sh-file-archive-bg); color: var(--sh-file-archive); }
+.group-avatar.tone-4 { background: var(--sh-file-image-bg); color: var(--sh-file-image); }
 .group-title {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   border: 0;
   background: transparent;
   text-align: left;
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 9px 8px;
+  padding: 6px 6px;
   font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.4px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
   color: var(--sh-text-muted);
-  text-transform: uppercase;
   cursor: pointer;
   user-select: none;
   border-radius: var(--sh-radius-sm);
@@ -401,9 +578,9 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 9px;
-  padding: 9px 8px;
+  padding: 8px;
   margin-bottom: 2px;
-  border-radius: var(--sh-radius);
+  border-radius: var(--sh-radius-sm);
   cursor: pointer;
   position: relative;
   border: 1px solid transparent;
@@ -420,10 +597,11 @@ onMounted(() => {
 .host-row:focus-within .host-actions,
 .host-row.selected .host-actions {
   opacity: 1;
+  pointer-events: auto;
 }
 .host-icon {
   width: 24px;
-  height: 28px;
+  height: 32px;
   flex-shrink: 0;
   border-radius: var(--sh-radius);
   display: grid;
@@ -447,7 +625,7 @@ onMounted(() => {
 }
 .host-addr {
   margin-top: 3px;
-  font: 10px var(--sh-font-mono);
+  font: 11px var(--sh-font-mono);
   color: var(--sh-text-muted);
   white-space: nowrap;
   overflow: hidden;
@@ -455,17 +633,34 @@ onMounted(() => {
 }
 .proto-tag {
   flex-shrink: 0;
-  font: 9px var(--sh-font-mono);
+  font: 10px var(--sh-font-mono);
   letter-spacing: 0.3px;
   padding: 2px 3px;
   color: var(--sh-text-muted);
   transition: opacity 0.14s ease;
 }
 .host-actions {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  z-index: 1;
   display: flex;
   flex-shrink: 0;
   gap: 2px;
+  padding: 2px;
+  border-radius: 6px;
+  background: var(--sh-bg-sidebar);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%);
+  transition: opacity 0.12s ease;
 }
+.host-row:hover .host-actions { background: var(--sh-bg-hover); }
+.host-row.selected .host-actions { background: var(--sh-bg-selected); }
+.host-row:hover .proto-tag,
+.host-row.selected .proto-tag,
+.host-row:focus-within .proto-tag { opacity: 0; }
+
 .act {
   width: 26px;
   height: 26px;
@@ -486,4 +681,28 @@ onMounted(() => {
 :deep(.el-dropdown-menu__item.is-danger) {
   color: var(--sh-danger);
 }
+.host-context {
+  position: fixed;
+  z-index: 40;
+  width: 178px;
+  padding: 5px;
+  border: 1px solid var(--sh-border-strong);
+  border-radius: 9px;
+  background: var(--sh-bg-panel);
+  box-shadow: var(--sh-shadow-pop);
+}
+.host-context button {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--sh-text);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.host-context button:hover { background: var(--sh-bg-hover); }
+.host-context button.is-danger { color: var(--sh-danger); }
 </style>

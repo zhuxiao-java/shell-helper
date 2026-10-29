@@ -5,13 +5,13 @@ import { useSessionStore } from '@renderer/stores/session'
 import { useHostStore } from '@renderer/stores/host'
 import type { Protocol } from '@renderer/api/types'
 
-const emit = defineEmits<{ (e: 'new-host'): void }>()
 const sessionStore = useSessionStore()
 const hostStore = useHostStore()
 
 const scrollRef = ref<HTMLDivElement>()
 const canScrollLeft = ref(false)
 const canScrollRight = ref(false)
+let tabResizeObserver: ResizeObserver | null = null
 
 function updateOverflow(): void {
   const el = scrollRef.value
@@ -66,22 +66,30 @@ watch(
 onMounted(() => {
   scrollRef.value?.addEventListener('scroll', updateOverflow)
   window.addEventListener('resize', updateOverflow)
+  if (scrollRef.value && typeof ResizeObserver !== 'undefined') {
+    tabResizeObserver = new ResizeObserver(updateOverflow)
+    tabResizeObserver.observe(scrollRef.value)
+  }
   updateOverflow()
 })
 onBeforeUnmount(() => {
   scrollRef.value?.removeEventListener('scroll', updateOverflow)
   window.removeEventListener('resize', updateOverflow)
+  tabResizeObserver?.disconnect()
+  tabResizeObserver = null
 })
 </script>
 
 <template>
   <div class="tab-bar">
-    <button v-show="canScrollLeft" class="tab-scroll-btn" type="button" aria-label="向左滚动标签" @click="scrollTabs(-180)"><el-icon><ArrowLeft /></el-icon></button>
+    <button class="tab-scroll-btn" :class="{ invisible: !canScrollLeft }" type="button" aria-label="向左滚动标签" :aria-hidden="!canScrollLeft" :tabindex="canScrollLeft ? 0 : -1" @click="scrollTabs(-180)"><el-icon><ArrowLeft /></el-icon></button>
     <div ref="scrollRef" class="tab-scroll" :class="{ 'fade-left': canScrollLeft, 'fade-right': canScrollRight }" role="tablist" aria-label="工作空间标签">
-      <!-- 常驻起始页:点击回到工作台,不影响已打开会话 -->
+      <!-- 常驻工作台:点击回到工作台,不影响已打开会话 -->
       <button
+        id="tab-home"
         class="tab-item home-tab"
         role="tab"
+        aria-controls="panel-home"
         :aria-selected="!sessionStore.activeId"
         :tabindex="!sessionStore.activeId ? 0 : -1"
         :class="{ active: !sessionStore.activeId }"
@@ -89,7 +97,7 @@ onBeforeUnmount(() => {
         @keydown="onNavigate($event, '')"
       >
         <el-icon class="home-icon"><House /></el-icon>
-        <span class="tab-title">开始</span>
+        <span class="tab-title">工作台</span>
       </button>
 
       <div class="tab-divider"></div>
@@ -97,9 +105,11 @@ onBeforeUnmount(() => {
       <div
         v-for="tab in sessionStore.tabs"
         :key="tab.id"
+        :id="`tab-${tab.id}`"
         class="tab-item"
         :class="{ active: tab.id === sessionStore.activeId }"
         role="tab"
+        aria-controls="panel-session"
         :aria-selected="tab.id === sessionStore.activeId"
         :tabindex="tab.id === sessionStore.activeId ? 0 : -1"
         :title="tab.title"
@@ -127,16 +137,7 @@ onBeforeUnmount(() => {
         </button>
       </div>
     </div>
-    <button v-show="canScrollRight" class="tab-scroll-btn" type="button" aria-label="向右滚动标签" @click="scrollTabs(180)"><el-icon><ArrowRight /></el-icon></button>
-    <el-dropdown trigger="click" @command="(command: string) => command === 'local' ? sessionStore.openLocalTerminal() : emit('new-host')">
-      <button class="tab-add" title="新建会话" aria-label="新建会话" type="button"><el-icon><Plus /></el-icon></button>
-      <template #dropdown>
-        <el-dropdown-menu>
-          <el-dropdown-item command="connection">新建连接</el-dropdown-item>
-          <el-dropdown-item command="local">本地终端</el-dropdown-item>
-        </el-dropdown-menu>
-      </template>
-    </el-dropdown>
+    <button class="tab-scroll-btn" :class="{ invisible: !canScrollRight }" type="button" aria-label="向右滚动标签" :aria-hidden="!canScrollRight" :tabindex="canScrollRight ? 0 : -1" @click="scrollTabs(180)"><el-icon><ArrowRight /></el-icon></button>
   </div>
 </template>
 
@@ -145,26 +146,27 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: stretch;
   height: var(--sh-tabbar-h);
-  padding: 0 10px;
+  padding: 0 16px;
   flex-shrink: 0;
-  gap: 8px;
-  background: var(--sh-bg);
+  gap: 4px;
+  background: var(--sh-bg-elevated);
   border-bottom: 1px solid var(--sh-border);
 }
 .tab-scroll {
   display: flex;
-  align-items: center;
-  gap: 4px;
+  align-items: stretch;
+  gap: 2px;
   overflow-x: auto;
   flex: 1;
   scrollbar-width: thin;
-  padding: 4px 2px;
+  padding: 0;
   min-width: 0;
 }
 .tab-scroll::-webkit-scrollbar { height: 4px; }
 .tab-scroll.fade-left { mask-image: linear-gradient(90deg, transparent, #000 16px); }
 .tab-scroll.fade-right { mask-image: linear-gradient(90deg, #000 calc(100% - 16px), transparent); }
 .tab-scroll.fade-left.fade-right { mask-image: linear-gradient(90deg, transparent, #000 16px, #000 calc(100% - 16px), transparent); }
+.tab-scroll-btn.invisible { visibility: hidden; pointer-events: none; }
 .tab-scroll-btn {
   align-self: center;
   width: 22px;
@@ -172,48 +174,54 @@ onBeforeUnmount(() => {
   display: grid;
   place-items: center;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--sh-radius-sm);
   background: transparent;
   color: var(--sh-text-muted);
   cursor: pointer;
 }
-.tab-divider {
-  width: 1px;
-  height: 14px;
-  background: var(--sh-border);
-  flex-shrink: 0;
-  margin: 0 4px;
-}
+.tab-divider { display: none; }
 
-/* 桌面工作区标签:未选中浅灰,选中白底 + 蓝色下划线 */
+/* DSH 风格标签：文字 + 蓝色下划线 */
 .tab-item {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 7px;
-  height: 30px;
-  padding: 0 9px 0 12px;
+  height: 100%;
+  padding: 0 10px;
   font-size: 12px;
   color: var(--sh-text-secondary);
   background: transparent;
   border: none;
-  border-radius: 7px;
+  border-radius: 0;
   cursor: pointer;
   white-space: nowrap;
   max-width: 220px;
   flex-shrink: 0;
   user-select: none;
-  transition: color 0.14s ease, background 0.14s ease, border-color 0.14s ease;
+  transition: color 0.14s ease, background 0.14s ease;
+}
+.tab-item::after {
+  content: '';
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 0;
+  height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: transparent;
+  transition: background 0.14s ease;
 }
 .tab-item:hover {
   background: var(--sh-bg-hover);
   color: var(--sh-text);
 }
 .tab-item.active {
-  background: var(--sh-bg-panel);
-  box-shadow: 0 1px 3px rgba(39, 50, 39, 0.07), 0 0 0 1px var(--sh-border);
+  background: transparent;
   color: var(--sh-text);
   font-weight: 500;
 }
+.tab-item.active::after { background: var(--sh-accent); }
 
 .tab-proto {
   display: grid;
@@ -259,8 +267,8 @@ onBeforeUnmount(() => {
 }
 
 .tab-close {
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
   border: none;
   border-radius: var(--sh-radius-sm);
   display: grid;
@@ -281,18 +289,4 @@ onBeforeUnmount(() => {
   background: rgba(220, 38, 38, 0.12);
   color: var(--sh-danger);
 }
-.tab-add {
-  align-self: center;
-  flex-shrink: 0;
-  width: 28px;
-  height: 28px;
-  display: grid;
-  place-items: center;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--sh-text-muted);
-  cursor: pointer;
-}
-.tab-add:hover { background: var(--sh-bg-hover); color: var(--sh-text); }
 </style>

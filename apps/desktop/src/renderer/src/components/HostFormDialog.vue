@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, nextTick, reactive, ref, watch } from 'vue'
 import type { FormInstance, FormRules } from 'element-plus'
 import { useHostStore } from '@renderer/stores/host'
 import * as hostApi from '@renderer/api/hosts'
@@ -7,7 +7,7 @@ import { withHostKey } from '@renderer/utils/hostKey'
 import type { Host, HostInput, Protocol, AuthType } from '@renderer/api/types'
 
 const visible = defineModel<boolean>({ required: true })
-const props = defineProps<{ editHost?: Host | null; initialProtocol?: Protocol }>()
+const props = defineProps<{ editHost?: Host | null; initialProtocol?: Protocol; initialHost?: string }>()
 const hostStore = useHostStore()
 
 const formRef = ref<FormInstance>()
@@ -15,6 +15,10 @@ const submitting = ref(false)
 const testing = ref(false)
 const testMessage = ref('')
 const showAdvanced = ref(false)
+const activeFormSection = ref<'basic' | 'auth' | 'advanced'>('basic')
+const basicSection = ref<HTMLElement>()
+const authSection = ref<HTMLElement>()
+const advancedSection = ref<HTMLElement>()
 // 服务端保存错误,就地展示在表单顶部
 const saveError = ref('')
 
@@ -31,7 +35,7 @@ function defaults(): HostInput {
     name: local ? '本地终端' : '',
     group: '默认分组',
     protocol,
-    host: '',
+    host: local ? '' : (props.initialHost ?? ''),
     port: { ssh: 22, sftp: 22, ftp: 21, telnet: 23, local: 0 }[protocol],
     username: '',
     auth_type: local ? 'none' : 'password',
@@ -148,6 +152,7 @@ watch(visible, (v) => {
     Object.assign(form, defaults())
   }
   showAdvanced.value = false
+  activeFormSection.value = 'basic'
   saveError.value = ''
   testMessage.value = ''
   formRef.value?.clearValidate()
@@ -177,6 +182,14 @@ async function testConnection(): Promise<void> {
     if (error === 'cancel' || error === 'close') return
     saveError.value = (error as Error).message || '连接失败'
   } finally { testing.value = false }
+}
+
+async function scrollToFormSection(section: 'basic' | 'auth' | 'advanced'): Promise<void> {
+  activeFormSection.value = section
+  if (section === 'advanced' && !showAdvanced.value) showAdvanced.value = true
+  await nextTick()
+  const target = section === 'basic' ? basicSection.value : section === 'auth' ? authSection.value : advancedSection.value
+  target?.scrollIntoView({ block: 'start', behavior: 'smooth' })
 }
 
 async function submit(): Promise<void> {
@@ -232,7 +245,12 @@ async function submit(): Promise<void> {
         show-icon
         :closable="false"
       />
-      <div class="hf-section">
+      <div class="hf-section-nav" role="group" aria-label="连接表单分段">
+        <button type="button" :class="{ active: activeFormSection === 'basic' }" @click="scrollToFormSection('basic')">基本信息</button>
+        <button v-if="form.protocol !== 'local'" type="button" :class="{ active: activeFormSection === 'auth' }" @click="scrollToFormSection('auth')">身份认证</button>
+        <button type="button" :class="{ active: activeFormSection === 'advanced' }" @click="scrollToFormSection('advanced')">分组与高级</button>
+      </div>
+      <div ref="basicSection" class="hf-section">
         <div class="hf-section-title">连接信息</div>
         <div class="hf-row">
           <el-form-item label="名称" prop="name" class="hf-name">
@@ -266,7 +284,7 @@ async function submit(): Promise<void> {
         </template>
       </div>
 
-      <div v-if="form.protocol !== 'local'" class="hf-section">
+      <div v-if="form.protocol !== 'local'" ref="authSection" class="hf-section">
         <div class="hf-section-title">身份认证</div>
         <el-form-item label="认证方式">
           <el-select v-model="form.auth_type">
@@ -292,7 +310,7 @@ async function submit(): Promise<void> {
         <el-icon class="hf-caret" :class="{ open: showAdvanced }"><CaretRight /></el-icon>
         <span>分组与高级设置</span>
       </button>
-      <div v-show="showAdvanced" class="hf-section hf-section--adv">
+      <div v-show="showAdvanced" ref="advancedSection" class="hf-section hf-section--adv">
         <el-form-item label="分组">
           <el-select v-model="form.group" filterable allow-create default-first-option placeholder="默认分组">
             <el-option v-for="name in groups" :key="name" :label="name" :value="name" />
@@ -333,9 +351,12 @@ async function submit(): Promise<void> {
 .hf-form {
   padding-top: 2px;
 }
-.hf-error {
-  margin-bottom: 12px;
-}
+.hf-error { margin-bottom: 12px; }
+.hf-section-nav { position: sticky; top: 0; z-index: 2; display: flex; gap: 4px; padding: 8px 0; margin-bottom: 6px; background: var(--sh-bg-panel); border-bottom: 1px solid var(--sh-border); }
+.hf-section-nav button { height: 28px; padding: 0 10px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--sh-text-muted); font-size: 11px; cursor: pointer; }
+.hf-section-nav button:hover { background: var(--sh-bg); color: var(--sh-text); }
+.hf-section-nav button.active { border-color: var(--sh-border); background: var(--sh-bg); color: var(--sh-text); font-weight: 500; }
+.hf-section-nav button:focus-visible { outline: 2px solid var(--sh-accent); outline-offset: 1px; }
 .hf-local-hint { color: var(--sh-text-secondary); font-size: 12px; line-height: 1.8; }
 .hf-section {
   padding: 4px 0 2px;

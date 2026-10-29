@@ -14,7 +14,7 @@ export interface EditDependencies {
   launch(file: string, editor: Settings['editor']): Promise<void>
   changed(items: EditItem[]): void
 }
-interface Draft extends EditItem { version: 1; fileName: string; baseHash: string }
+interface Draft extends EditItem { version: 1; fileName: string; baseHash: string; remoteSize?: number; remoteMtime?: number }
 const hash = (data: Buffer): string => createHash('sha256').update(data).digest('hex')
 const delay = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
 
@@ -45,16 +45,18 @@ export class ExternalEditService {
   private watchers = new Map<string, FSWatcher>()
   private timers = new Map<string, ReturnType<typeof setTimeout>>()
   private scans = new Map<string, Promise<void>>()
+  private remoteScans = new Map<string, Promise<void>>()
   private busy = new Set<string>()
   private detached = new Set<string>()
   private openQueue: Promise<unknown> = Promise.resolve()
   private writes: Promise<unknown> = Promise.resolve()
   private poll?: ReturnType<typeof setInterval>
+  private remotePoll?: ReturnType<typeof setInterval>
   private stopped = false
-  constructor(private readonly root: string, private readonly deps: EditDependencies) {}
+  constructor(private readonly root: string, private readonly deps: EditDependencies, private readonly options: { remotePollMs?: number } = {}) {}
 
   list(): EditItem[] {
-    return [...this.drafts.values()].map(({ version: _v, fileName: _f, baseHash: _b, ...item }) => ({ ...item }))
+    return [...this.drafts.values()].map(({ version: _v, fileName: _f, baseHash: _b, remoteSize: _s, remoteMtime: _m, ...item }) => ({ ...item }))
   }
   private file(d: Draft): string { return path.join(this.root, d.id, d.fileName) }
   private notify(): void { this.deps.changed(this.list()) }
@@ -91,6 +93,13 @@ export class ExternalEditService {
       for (const d of this.drafts.values()) void this.scan(d)
     }, 2000)
     this.poll.unref()
+    const remotePollMs = this.options.remotePollMs ?? 3000
+    if (remotePollMs > 0) {
+      this.remotePoll = setInterval(() => {
+        for (const d of this.drafts.values()) void this.checkRemote(d)
+      }, remotePollMs)
+      this.remotePoll.unref()
+    }
   }
   private observe(d: Draft): void {
     const watcher = watch(path.dirname(this.file(d)), (_event, name) => {
@@ -128,6 +137,96 @@ export class ExternalEditService {
     }
     throw new Error('编辑器仍在保存，请稍后重试')
   }
+  private async remoteStat(d: { sessionId: string | null; remotePath: string }): Promise<{ size: number; mtime: number } | null> {
+    if (!d.sessionId) return null
+    const response = await this.deps.request(
+      `/api/files/stat?${new URLSearchParams({ session_id: d.sessionId, path: d.remotePath })}`
+    )
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({})) as { detail?: string }
+      throw new RemoteError(response.status, data.detail || `远程文件状态读取失败 (${response.status})`)
+    }
+    return await response.json() as { size: number; mtime: number }
+  }
+  private async writeLocal(d: Draft, data: Buffer): Promise<void> {
+    const target = this.file(d)
+    const temp = path.join(path.dirname(target), `.shell-helper-${randomUUID()}.tmp`)
+    await fs.writeFile(temp, data, { mode: 0o600 })
+    try { await fs.rename(temp, target) }
+    catch (error) {
+      await fs.rm(temp, { force: true }).catch(() => undefined)
+      throw error
+    }
+  }
+  private checkRemote(d: Draft): Promise<void> {
+    if (!d.sessionId || this.stopped || this.busy.has(d.id)) return Promise.resolve()
+    const running = this.remoteScans.get(d.id)
+    if (running) return running
+    const task = (async () => {
+      try {
+        const info = await this.remoteStat(d)
+        if (!info || this.stopped) return
+        if (d.remoteSize === info.size && d.remoteMtime === info.mtime) return
+        const response = await this.deps.request(
+          `/api/files/content?${new URLSearchParams({ session_id: d.sessionId!, path: d.remotePath })}`,
+          { cache: 'no-store' }
+        )
+        const bytes = await responseBytes(response)
+        if (this.stopped) return
+        const digest = response.headers.get('X-Content-SHA256')
+        const nextHash = hash(bytes)
+        if (digest && digest !== nextHash) throw new Error('远程文件摘要校验失败')
+        if (nextHash === d.baseHash) {
+          d.remoteSize = info.size
+          d.remoteMtime = info.mtime
+          await this.persist(d)
+          return
+        }
+        // 远程变了：先确认本地是否有未保存修改，避免覆盖用户内容
+        await this.scan(d)
+        if (this.stopped) return
+        if (d.dirty) {
+          d.baseHash = nextHash
+          d.status = 'conflict'
+          d.message = '远程文件已被其他人修改；本地修改仍保留，可选择用远程版本覆盖本地'
+          d.remoteSize = info.size
+          d.remoteMtime = info.mtime
+          await this.persist(d)
+          this.notify()
+          return
+        }
+        await this.writeLocal(d, bytes)
+        d.baseHash = nextHash
+        d.hash = nextHash
+        d.dirty = false
+        d.status = d.sessionId ? 'synced' : 'disconnected'
+        d.message = '已同步远程更新'
+        d.remoteSize = info.size
+        d.remoteMtime = info.mtime
+        await this.persist(d)
+        this.notify()
+      } catch (error) {
+        if (this.stopped) return
+        if (error instanceof RemoteError && error.status === 410) {
+          d.sessionId = null
+          d.status = 'disconnected'
+          d.message = '文件会话已断开，远程更新检查已停止'
+          await this.persist(d)
+          this.notify()
+        } else if (error instanceof RemoteError && error.status === 404) {
+          // 旧版后端没有 /stat 路由时返回 Not Found，不应误判为远程文件被删除
+          if (/not found/i.test(error.message)) return
+          d.status = 'error'
+          d.message = '远程文件已被删除，本地草稿仍保留'
+          await this.persist(d)
+          this.notify()
+        }
+        // 其他网络抖动只在下一次轮询重试，避免频繁弹错。
+      }
+    })().finally(() => this.remoteScans.delete(d.id))
+    this.remoteScans.set(d.id, task)
+    return task
+  }
   private scan(d: Draft): Promise<void> {
     const running = this.scans.get(d.id)
     if (running) return running
@@ -138,6 +237,7 @@ export class ExternalEditService {
         if (d.hash === next && d.status !== 'error') return
         d.hash = next
         d.dirty = next !== d.baseHash
+        if (d.status !== 'conflict' && d.status !== 'error') d.message = ''
         if (!this.busy.has(d.id) && d.status !== 'conflict') d.status = d.sessionId ? (d.dirty ? 'pending' : 'synced') : 'disconnected'
         await this.persist(d)
         this.notify()
@@ -170,8 +270,10 @@ export class ExternalEditService {
       if (this.busy.has(d.id)) throw new Error('文件正在回传，请稍后再打开')
       d.sessionId = input.sessionId
       await this.scan(d)
-      d.status = d.dirty ? 'pending' : 'synced'
-      d.message = ''
+      if (d.status !== 'conflict') {
+        d.status = d.dirty ? 'pending' : 'synced'
+        d.message = ''
+      }
     } else {
       const response = await this.deps.request(`/api/files/content?${new URLSearchParams({ session_id: input.sessionId, path: remotePath })}`)
       const bytes = await responseBytes(response)
@@ -180,8 +282,11 @@ export class ExternalEditService {
       const editor = this.deps.editor()
       const ext = path.posix.extname(remotePath)
       const fileName = editor.mode === 'default' ? 'document.txt' : `document${/^\.[a-zA-Z0-9_-]{1,20}$/.test(ext) ? ext : ''}`
+      let remote: { size: number; mtime: number } | null = null
+      try { remote = await this.remoteStat({ sessionId: input.sessionId, remotePath }) } catch { /* stat 不是打开文件的必要条件 */ }
       d = { version: 1, id: randomUUID(), hostId: session.host_id, hostName: String(input.hostName || session.host_id).slice(0, 200),
-        remotePath, sessionId: input.sessionId, fileName, baseHash, hash: baseHash, dirty: false, status: 'synced', message: '' }
+        remotePath, sessionId: input.sessionId, fileName, baseHash, hash: baseHash, dirty: false, status: 'synced', message: '',
+        remoteSize: remote?.size ?? bytes.length, remoteMtime: remote?.mtime ?? 0 }
       await fs.mkdir(path.dirname(this.file(d)), { mode: 0o700 })
       await fs.writeFile(this.file(d), bytes, { mode: 0o600, flag: 'wx' })
       await this.persist(d)
@@ -241,12 +346,48 @@ export class ExternalEditService {
       d.baseHash = result.sha256
       d.hash = hash(await this.stable(d))
       d.dirty = d.hash !== d.baseHash
+      d.remoteSize = snapshot.length
+      d.remoteMtime = 0
       d.status = d.sessionId ? (d.dirty ? 'pending' : 'synced') : 'disconnected'
       d.message = ''
       await this.persist(d)
     } catch (error) {
       if (error instanceof RemoteError && error.status === 410) d.sessionId = null
       d.status = error instanceof RemoteError && error.status === 409 ? 'conflict' : d.sessionId ? 'error' : 'disconnected'
+      d.message = (error as Error).message
+      await this.persist(d)
+      throw error
+    } finally {
+      this.busy.delete(id)
+      this.notify()
+    }
+  }
+  async reload(id: string): Promise<EditItem[]> {
+    const d = this.get(id)
+    if (!d.sessionId || this.stopped) throw new Error('连接已断开，请先重新打开远程文件')
+    if (this.busy.has(id)) throw new Error('文件正在回传，请稍后再试')
+    this.busy.add(id)
+    try {
+      const response = await this.deps.request(
+        `/api/files/content?${new URLSearchParams({ session_id: d.sessionId, path: d.remotePath })}`,
+        { cache: 'no-store' }
+      )
+      const bytes = await responseBytes(response)
+      const digest = response.headers.get('X-Content-SHA256')
+      const nextHash = hash(bytes)
+      if (digest && digest !== nextHash) throw new Error('远程文件摘要校验失败')
+      await this.writeLocal(d, bytes)
+      d.baseHash = nextHash
+      d.hash = nextHash
+      d.dirty = false
+      d.status = 'synced'
+      d.message = '已使用远程版本覆盖本地副本'
+      d.remoteSize = bytes.length
+      d.remoteMtime = 0
+      await this.persist(d)
+      return this.list()
+    } catch (error) {
+      d.status = error instanceof RemoteError && error.status === 409 ? 'conflict' : (d.sessionId ? 'error' : 'disconnected')
       d.message = (error as Error).message
       await this.persist(d)
       throw error
@@ -281,9 +422,13 @@ export class ExternalEditService {
     this.stopped = true
     while (this.busy.size) await delay(100)
     clearInterval(this.poll)
+    if (this.remotePoll) clearInterval(this.remotePoll)
     for (const watcher of this.watchers.values()) watcher.close()
     for (const timer of this.timers.values()) clearTimeout(timer)
     await Promise.all(this.scans.values())
+    if (this.remoteScans.size) {
+      await Promise.race([Promise.all(this.remoteScans.values()), delay(1000)])
+    }
     for (const d of this.drafts.values()) await this.persist(d)
   }
 }

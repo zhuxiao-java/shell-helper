@@ -3,6 +3,28 @@
 // 侧栏/内容/表单/浮层为浅色,终端保持深色,形成工作区边界
 // ============================================================
 
+@font-face {
+  font-family: 'Montserrat';
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+  src: url('../assets/fonts/montserrat-light-Cvd2VjE_.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Montserrat';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('../assets/fonts/montserrat-regular-DYep38cA.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Montserrat';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('../assets/fonts/montserrat-medium-B4OyO9CN.woff2') format('woff2');
+}
+
 :root {
   // 尺寸
   --sh-header-h: 52px;
@@ -11,9 +33,10 @@
   --sh-tabbar-h: 44px;
 
   // 圆角 / 控件 / 间距令牌
-  --sh-radius: 10px;
-  --sh-radius-sm: 7px;
+  --sh-radius: 12px;
+  --sh-radius-sm: 8px;
   --sh-radius-lg: 16px;
+  --sh-radius-xl: 20px;
   --sh-control-h: 32px;
   --sh-gap: 8px;
   --sh-gap-sm: 4px;
@@ -22,107 +45,130 @@
   --sh-gap-xl: 16px;
   --sh-gap-2xl: 24px;
 
-  // 浅色表面
-  --sh-bg: #f4f3ef; // 应用底色
-  --sh-bg-sidebar: #eeede8; // 侧栏
-  --sh-bg-elevated: #faf9f6; // 内容 / 表单 / 浮层
+  // DSH 风格中性表面
+  --sh-bg: #f9fafb; // 页面/状态栏
+  --sh-bg-sidebar: #f5f6f7; // 侧栏
+  --sh-bg-elevated: #ffffff; // 主内容 / 表单 / 浮层
   --sh-bg-panel: #ffffff;
+  --sh-font-brand: 'Montserrat', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --sh-font-ui: 'Montserrat', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'PingFang SC', 'Microsoft YaHei', sans-serif;
   --sh-font-mono: 'SFMono-Regular', Menlo, Monaco, Consolas, monospace;
-  --sh-ink: #293c36;
-  --sh-bg-hover: #e6e7e1; // 中性悬停
-  --sh-bg-active: #dddfd7; // 中性按下/激活
-  --sh-bg-selected: #e2ece5; // 强调选中底
+  --sh-ink: #0f1115;
+  --sh-bg-hover: #f1f3f5;
+  --sh-bg-active: #e9ecf2;
+  --sh-bg-selected: #ebeef2;
 
   // 描边
-  --sh-border: #e3e3db;
-  --sh-border-strong: #d1d5cb;
+  --sh-border: rgba(15, 17, 21, 0.08);
+  --sh-border-strong: rgba(15, 17, 21, 0.14);
 
   // 文本
-  --sh-text: #2d3832;
-  --sh-text-secondary: #687168;
-  --sh-text-muted: #7b847a;
+  --sh-text: #0f1115;
+  --sh-text-secondary: #61666b;
+  --sh-text-muted: #6b7076;
 
-  // 品牌(单一蓝强调)
-  --sh-accent: #47755d;
-  --sh-accent-soft: rgba(71, 117, 93, 0.09);
-  --sh-accent-border: rgba(71, 117, 93, 0.3);
+  // 品牌蓝与主色
+  --sh-accent: #3468d8;
+  --sh-accent-soft: rgba(52, 104, 216, 0.08);
+  --sh-accent-border: rgba(52, 104, 216, 0.30);
 
   // 语义色
-  --sh-success: #568566;
-  --sh-danger: #c35151;
-  --sh-warning: #a1834f;
-  --sh-warning-bg: #faf2e4;
-  --sh-warning-text: #856837;
-  --sh-on-ink: #f5f7ef;
-  --sh-on-ink-muted: #b9cabd;
-  --sh-ink-hover: #354e43;
-  --sh-logo-fg: #e6efdf;
-  --sh-mark-bg: #e7eddf;
-  --sh-mark-border: #cbd8c8;
-  --sh-kbd-on-ink: #3a5044;
-  --sh-kbd-on-ink-border: #526756;
-  --sh-kbd-on-ink-text: #d3ded2;
-  --sh-tree-bg: #f6f6f2;
-  --sh-tree-border: #ecece6;
-  --sh-tree-hover: #eaece5;
-  --sh-tree-current: #e3ebe1;
-  --sh-tree-current-text: #355944;
-  --sh-tree-arrow: #929c90;
-  --sh-path-divider: #a8aea7;
-  --sh-row-hover: #f5f7f3;
-  --sh-row-selected: #eaf1e7;
-  --sh-row-selected-border: #d9e6d4;
-  --sh-column-line: #eef0eb;
-  --sh-count-bg: #f0f2ed;
-  --sh-search-bg: #f7f8f5;
-  --sh-file-glyph-border: #dfe4e2;
-  --sh-file-glyph-color: #8b9997;
-  --sh-file-glyph-bg: #f7f9f8;
-  --sh-blank-icon: #b4bcae;
-  --sh-storage-card: #fcfcfa;
-  --sh-storage-icon-bg: #eaf0e6;
-  --sh-storage-path-border: #eceee7;
-  --sh-storage-path-bg: #f3f5f0;
-  --sh-storage-path-text: #56634f;
+  --sh-success: #15803d;
+  --sh-danger: #ec1313;
+  --sh-warning: #f59e0b;
+  --sh-warning-bg: #fef5e7;
+  --sh-warning-text: #8a5a00;
+  --sh-on-ink: #ffffff;
+  --sh-on-ink-muted: #9aa0a6;
+  --sh-ink-hover: #292929;
+  --sh-logo-fg: #ffffff;
+  --sh-mark-bg: #f1f3f5;
+  --sh-mark-border: #e1e5ee;
+  --sh-kbd-on-ink: #2c2c2e;
+  --sh-kbd-on-ink-border: #3c3c3d;
+  --sh-kbd-on-ink-text: #f9fafb;
+  --sh-tree-bg: #f5f6f7;
+  --sh-tree-border: #e9ecf2;
+  --sh-tree-hover: #eef0f3;
+  --sh-tree-current: #ebeef2;
+  --sh-tree-current-text: #0f1115;
+  --sh-tree-arrow: #81858c;
+  --sh-path-divider: #adb2b8;
+  --sh-row-hover: #f9fafb;
+  --sh-row-selected: #f1f3f5;
+  --sh-row-selected-border: #e1e5ee;
+  --sh-column-line: #eef0f3;
+  --sh-count-bg: #f1f3f5;
+  --sh-search-bg: #f5f6f7;
+  --sh-file-glyph-border: #e1e5ee;
+  --sh-file-glyph-color: #81858c;
+  --sh-file-glyph-bg: #f9fafb;
+  // 文件类型图标：code / config / archive / image
+  --sh-file-code: #3468d8;
+  --sh-file-code-bg: #edf3fe;
+  --sh-file-code-border: #d3e2ff;
+  --sh-file-config: #7c3aed;
+  --sh-file-config-bg: #f5f1ff;
+  --sh-file-config-border: #e6dcff;
+  --sh-file-archive: #b45309;
+  --sh-file-archive-bg: #fef5e7;
+  --sh-file-archive-border: #f7dfb8;
+  --sh-file-image: #0e7490;
+  --sh-file-image-bg: #e6f7fb;
+  --sh-file-image-border: #c9e9f1;
+  --sh-blank-icon: #adb2b8;
+  // 滚动条
+  --sh-scrollbar-thumb: rgba(15, 17, 21, 0.12);
+  --sh-scrollbar-thumb-hover: rgba(15, 17, 21, 0.22);
+  --sh-storage-card: #f9fafb;
+  --sh-storage-icon-bg: #edf3fe;
+  --sh-storage-path-border: #e9ecf2;
+  --sh-storage-path-bg: #f5f6f7;
+  --sh-storage-path-text: #4a5058;
 
-  // 协议色(低饱和,浅色下深色文字)
-  --sh-ssh: #47755d;
-  --sh-sftp: #577e8c;
-  --sh-ftp: #a1834f;
-  --sh-telnet: #956780;
-  --sh-local: #797194;
+  // 协议色（DSH 文件类型色系）
+  --sh-ssh: #3468d8;
+  --sh-sftp: #0e7490;
+  --sh-ftp: #b45309;
+  --sh-telnet: #7c3aed;
+  --sh-local: #61666b;
 
-  // 阴影(仅浮层/弹窗)
-  --sh-shadow-pop: 0 8px 28px rgba(38, 48, 40, 0.1);
-  --sh-shadow-dialog: 0 24px 80px rgba(28, 40, 32, 0.18);
+  // 阴影（DSH elevation-stroke + 轻微扩散）
+  --sh-shadow-pop: 0 0 0 0.5px rgba(15, 17, 21, 0.12), 0 3px 8px rgba(15, 17, 21, 0.04), 0 0 16px rgba(15, 17, 21, 0.03);
+  --sh-shadow-dialog: 0 0 0 0.5px rgba(15, 17, 21, 0.12), 0 24px 72px rgba(15, 17, 21, 0.14);
 
-  // ---- 终端专属深色(不随浅色外壳改变) ----
-  --sh-bg-terminal: #16181d;
-  --sh-terminal-text: #e6e9ef;
-  --sh-terminal-muted: #9aa4b2;
-  --sh-terminal-danger: #f0616d;
+  // ---- 终端专属深色 ----
+  --sh-bg-terminal: #0f1115;
+  --sh-terminal-text: #f9fafb;
+  --sh-terminal-muted: #adb2b8;
+  --sh-terminal-danger: #f25a5a;
 }
 
 // ---- 浅色下微调 Element Plus:统一主色与控件观感 ----
 :root {
-  --el-color-primary: #47755d;
-  --el-color-primary-light-3: #7e9e88;
-  --el-color-primary-light-5: #a3baab;
-  --el-color-primary-light-7: #c8d7cc;
-  --el-color-primary-light-8: #dbe5de;
-  --el-color-primary-light-9: #e2ece5;
-  --el-color-primary-dark-2: #355944;
-  --el-color-success: var(--sh-success);
+  --el-color-primary: #3468d8;
+  --el-color-primary-light-3: #6f93e5;
+  --el-color-primary-light-5: #99b7ef;
+  --el-color-primary-light-7: #c2d5f6;
+  --el-color-primary-light-8: #d6e3fa;
+  --el-color-primary-light-9: #eaf0fd;
+  --el-color-primary-dark-2: #2a54ad;
+  --el-color-success: #15803d;
   --el-color-danger: var(--sh-danger);
-  --el-border-radius-base: 7px;
+  --el-color-warning: #b45309;
+  --el-color-info: #61666b;
+  --el-border-radius-base: 8px;
   --el-text-color-primary: var(--sh-text);
   --el-text-color-regular: var(--sh-text-secondary);
   --el-text-color-secondary: var(--sh-text-muted);
+  --el-text-color-placeholder: var(--sh-text-muted);
   --el-border-color: var(--sh-border-strong);
   --el-border-color-light: var(--sh-border);
   --el-fill-color-light: var(--sh-bg);
   --el-bg-color: var(--sh-bg-panel);
-  --el-mask-color: rgba(250, 249, 246, 0.85);
+  --el-bg-color-overlay: var(--sh-bg-panel);
+  --el-fill-color-blank: var(--sh-bg-panel);
+  --el-mask-color: rgba(249, 250, 251, 0.82);
 }
 
 button,
@@ -165,8 +211,9 @@ body,
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
-    'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-family: var(--sh-font-ui);
+  font-size: 13px;
+  letter-spacing: 0.002em;
   overflow: hidden;
   color: var(--sh-text);
   background: var(--sh-bg);
@@ -189,13 +236,13 @@ textarea,
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(20, 28, 44, 0.18);
+  background: var(--sh-scrollbar-thumb);
   border-radius: 6px;
   border: 2px solid transparent;
   background-clip: content-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(20, 28, 44, 0.3);
+  background: var(--sh-scrollbar-thumb-hover);
   background-clip: content-box;
 }
 
@@ -246,9 +293,10 @@ textarea,
   display: flex;
   flex-direction: column;
   background: var(--sh-bg-elevated);
-  margin: 0 10px 0 0;
-  border: 1px solid var(--sh-border);
-  border-radius: 12px;
+  margin: 0;
+  border: 0;
+  border-left: 1px solid var(--sh-border);
+  border-radius: 0;
   overflow: hidden;
 }
 
@@ -257,17 +305,21 @@ textarea,
   flex-shrink: 0;
   display: flex;
   align-items: center;
-  gap: 18px;
+  gap: 14px;
   padding: 0 18px;
   font-size: 11px;
-  color: var(--sh-text-secondary);
-  background: var(--sh-bg-sidebar);
+  color: var(--sh-text-muted);
+  background: var(--sh-bg);
+  border-top: 1px solid var(--sh-border);
+  overflow: hidden;
 }
 
 .status-item {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
+  white-space: nowrap;
 }
 
 .status-dot {
@@ -324,7 +376,7 @@ textarea,
   padding: 0;
   margin: max(24px, 6vh) auto;
   border: 1px solid var(--sh-border);
-  border-radius: var(--sh-radius-lg);
+  border-radius: var(--sh-radius-xl);
   background: var(--sh-bg-panel);
   box-shadow: var(--sh-shadow-dialog);
   overflow: hidden;
@@ -347,7 +399,7 @@ textarea,
 }
 .el-dialog__footer {
   padding: 16px 28px;
-  background: var(--sh-bg-elevated);
+  background: var(--sh-bg);
   border-top: 1px solid var(--sh-border);
   flex-shrink: 0;
 }
@@ -372,69 +424,125 @@ textarea,
 
 html.theme-dark {
   color-scheme: dark;
-  --sh-bg: #1c211e;
-  --sh-bg-sidebar: #171c19;
-  --sh-bg-elevated: #222824;
-  --sh-bg-panel: #2a312c;
-  --sh-bg-hover: #313a34;
-  --sh-bg-active: #3a453d;
-  --sh-bg-selected: #24382e;
-  --sh-border: #3a433d;
-  --sh-border-strong: #4d5a51;
-  --sh-text: #e7eee8;
-  --sh-text-secondary: #b7c3ba;
-  --sh-text-muted: #8b998f;
-  --sh-ink: #d7e7dc;
-  --sh-on-ink: #1c2822;
-  --sh-on-ink-muted: #3d5246;
-  --sh-ink-hover: #edf5ef;
-  --sh-logo-fg: #1c2822;
-  --sh-accent: #8fbfa3;
-  --sh-accent-soft: rgba(143, 191, 163, 0.16);
-  --sh-accent-border: rgba(143, 191, 163, 0.4);
-  --sh-success: #7dbe96;
-  --sh-danger: #e07a7a;
-  --sh-warning: #d2b27a;
-  --sh-warning-bg: #3a3224;
-  --sh-warning-text: #e6d3a8;
-  --sh-mark-bg: #24302a;
-  --sh-mark-border: #3d4d44;
-  --sh-kbd-on-ink: #24302a;
-  --sh-kbd-on-ink-border: #415248;
-  --sh-kbd-on-ink-text: #d7e7dc;
-  --sh-tree-bg: #1e2420;
-  --sh-tree-border: #343d37;
-  --sh-tree-hover: #2c3530;
-  --sh-tree-current: #2a4034;
-  --sh-tree-current-text: #d7e7dc;
-  --sh-tree-arrow: #8b998f;
-  --sh-path-divider: #6d7a72;
-  --sh-row-hover: #2c3530;
-  --sh-row-selected: #24382e;
-  --sh-row-selected-border: #3d5648;
-  --sh-column-line: #343d37;
-  --sh-count-bg: #313a34;
-  --sh-search-bg: #313a34;
-  --sh-file-glyph-border: #3d4842;
-  --sh-file-glyph-color: #9aaba0;
-  --sh-file-glyph-bg: #24302a;
-  --sh-blank-icon: #6d7a72;
-  --sh-storage-card: #24302a;
-  --sh-storage-icon-bg: #2c3b33;
-  --sh-storage-path-border: #3a433d;
-  --sh-storage-path-bg: #1c211e;
-  --sh-storage-path-text: #c5d2c8;
-  --el-color-primary: #8fbfa3;
-  --el-color-primary-light-3: #6ea484;
-  --el-color-primary-light-5: #4e7360;
-  --el-color-primary-light-7: #355244;
-  --el-color-primary-light-8: #2c4036;
-  --el-color-primary-light-9: #24382e;
-  --el-color-primary-dark-2: #c5e0d0;
+  --sh-bg: #151517;
+  --sh-bg-sidebar: #1b1b1c;
+  --sh-bg-elevated: #1b1b1c;
+  --sh-bg-panel: #232324;
+  --sh-bg-hover: #232324;
+  --sh-bg-active: #2c2c2e;
+  --sh-bg-selected: #2c2c2e;
+  --sh-border: rgba(255, 255, 255, 0.10);
+  --sh-border-strong: rgba(255, 255, 255, 0.18);
+  --sh-text: #f9fafb;
+  --sh-text-secondary: #cfd3d6;
+  --sh-text-muted: #9aa0a6;
+  --sh-ink: #f9fafb;
+  --sh-on-ink: #151517;
+  --sh-on-ink-muted: #61666b;
+  --sh-ink-hover: #ffffff;
+  --sh-logo-fg: #151517;
+  --sh-accent: #5686fe;
+  --sh-accent-soft: rgba(86, 134, 254, 0.16);
+  --sh-accent-border: rgba(86, 134, 254, 0.42);
+  --sh-success: #4ed17e;
+  --sh-danger: #f25a5a;
+  --sh-warning: #f7ad31;
+  --sh-warning-bg: #27241f;
+  --sh-warning-text: #f7d9a3;
+  --sh-mark-bg: #232324;
+  --sh-mark-border: #353638;
+  --sh-kbd-on-ink: #2c2c2e;
+  --sh-kbd-on-ink-border: #3c3c3d;
+  --sh-kbd-on-ink-text: #f9fafb;
+  --sh-tree-bg: #1b1b1c;
+  --sh-tree-border: #2c2c2e;
+  --sh-tree-hover: #232324;
+  --sh-tree-current: #2c2c2e;
+  --sh-tree-current-text: #f9fafb;
+  --sh-tree-arrow: #81858c;
+  --sh-path-divider: #61666b;
+  --sh-row-hover: #232324;
+  --sh-row-selected: #2c2c2e;
+  --sh-row-selected-border: #353638;
+  --sh-column-line: #2c2c2e;
+  --sh-count-bg: #232324;
+  --sh-search-bg: #232324;
+  --sh-file-glyph-border: #353638;
+  --sh-file-glyph-color: #adb2b8;
+  --sh-file-glyph-bg: #232324;
+  --sh-file-code: #7aaaff;
+  --sh-file-code-bg: #17243d;
+  --sh-file-code-border: #2b3d5c;
+  --sh-file-config: #b7a6ff;
+  --sh-file-config-bg: #241c38;
+  --sh-file-config-border: #3a2d57;
+  --sh-file-archive: #f7ad31;
+  --sh-file-archive-bg: #2b2418;
+  --sh-file-archive-border: #4a3a20;
+  --sh-file-image: #5db0d7;
+  --sh-file-image-bg: #152c33;
+  --sh-file-image-border: #24454f;
+  --sh-blank-icon: #61666b;
+  --sh-scrollbar-thumb: rgba(255, 255, 255, 0.12);
+  --sh-scrollbar-thumb-hover: rgba(255, 255, 255, 0.22);
+  --sh-shadow-pop: 0 0 0 0.5px rgba(255, 255, 255, 0.14), 0 8px 28px rgba(0, 0, 0, 0.45);
+  --sh-shadow-dialog: 0 0 0 0.5px rgba(255, 255, 255, 0.14), 0 24px 80px rgba(0, 0, 0, 0.58);
+  --sh-storage-card: #1b1b1c;
+  --sh-storage-icon-bg: #17243d;
+  --sh-storage-path-border: #2c2c2e;
+  --sh-storage-path-bg: #151517;
+  --sh-storage-path-text: #cfd3d6;
+  --sh-ssh: #7aaaff;
+  --sh-sftp: #5db0d7;
+  --sh-ftp: #f7ad31;
+  --sh-telnet: #b7a6ff;
+  --sh-local: #adb2b8;
+  --el-color-primary: #5686fe;
+  --el-color-primary-light-3: #7aa3ff;
+  --el-color-primary-light-5: #99b7ef;
+  --el-color-primary-light-7: #2b3d5c;
+  --el-color-primary-light-8: #21334f;
+  --el-color-primary-light-9: #1a2a42;
+  --el-color-primary-dark-2: #8fb0ff;
+  --el-color-success: #4ed17e;
+  --el-color-success-light-9: #1e3a29;
+  --el-color-danger: var(--sh-danger);
+  --el-color-warning: #f7ad31;
+  --el-color-warning-light-9: #2b2418;
+  --el-color-warning-light-8: #3a2f1d;
+  --el-color-info: #adb2b8;
   --el-bg-color: var(--sh-bg-panel);
+  --el-bg-color-page: var(--sh-bg);
+  --el-bg-color-overlay: var(--sh-bg-panel);
+  --el-fill-color: var(--sh-bg-hover);
   --el-fill-color-light: var(--sh-bg);
-  --el-mask-color: rgba(18, 22, 19, 0.72);
+  --el-fill-color-lighter: var(--sh-bg-elevated);
+  --el-fill-color-extra-light: var(--sh-bg);
+  --el-fill-color-dark: var(--sh-bg-active);
+  --el-fill-color-darker: var(--sh-bg-active);
+  --el-fill-color-blank: var(--sh-bg-panel);
+  --el-border-color: var(--sh-border-strong);
+  --el-border-color-light: var(--sh-border);
+  --el-border-color-lighter: var(--sh-border);
+  --el-border-color-extra-light: var(--sh-border);
+  --el-border-color-dark: var(--sh-border-strong);
+  --el-border-color-darker: var(--sh-border-strong);
+  --el-border-color-hover: var(--sh-border-strong);
+  --el-disabled-bg-color: var(--sh-bg-active);
+  --el-disabled-text-color: var(--sh-text-muted);
+  --el-disabled-border-color: var(--sh-border);
+  --el-mask-color: rgba(15, 17, 21, 0.72);
   --el-text-color-primary: var(--sh-text);
   --el-text-color-regular: var(--sh-text-secondary);
   --el-text-color-secondary: var(--sh-text-muted);
+  --el-text-color-placeholder: var(--sh-text-muted);
+  --el-box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  --el-box-shadow-light: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+
+// 暗色主色是亮蓝，按钮文字使用深色以保证可读性
+html.theme-dark .el-button--primary {
+  --el-button-text-color: #0f1115;
+  --el-button-hover-text-color: #0f1115;
+  --el-button-active-text-color: #0f1115;
 }
